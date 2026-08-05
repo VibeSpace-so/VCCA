@@ -32,8 +32,11 @@ This repo includes project-scoped MCP configs so the VCCA server is automaticall
 - `.mcp.json` for **Claude Code**
 - `.codex/config.toml` for **Codex**
 - `.devin/mcp_config.json` for **Devin CLI**
+- `.cursor/mcp.json` for **Cursor**
 
-Run `npm install` once in this repo, then open it in your agent. The agent should discover the `vcca` MCP server and its 11 tools.
+Run `npm install` once in this repo, then open it in your agent. The agent should discover the `vcca` MCP server and its tools.
+
+Windsurf does not support project-scoped MCP configs, so use the global example in `config-examples/windsurf/mcp_config.json` and update `<VCCA_REPO_PATH>`.
 
 ## Host configuration examples
 

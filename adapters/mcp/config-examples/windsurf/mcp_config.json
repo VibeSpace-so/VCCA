@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "vcca": {
+      "command": "npm",
+      "args": ["--prefix", "<VCCA_REPO_PATH>", "run", "mcp"]
+    }
+  }
+}

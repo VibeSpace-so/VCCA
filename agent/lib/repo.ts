@@ -342,7 +342,11 @@ export async function analyzeRepo(projectPath: string): Promise<RepoSummary> {
   const hasHealthEndpoint = (await grepText(p, ["/health", "healthcheck", "health check"], 3)).length > 0;
 
   const testFiles = await walkForFiles(p, [".test.", ".spec.", "test_", "_test.", "conftest", "pytest"], 10);
-  const hasTests = testFiles.length > 0 || top.some((n) => /test/i.test(n));
+  const testRunnerDeps = ["jest", "vitest", "mocha", "ava", "tap", "karma", "jasmine", "cypress", "playwright", "pytest", "rspec"];
+  const hasTests =
+    testFiles.length > 0 ||
+    top.some((n) => /test/i.test(n)) ||
+    allDeps.some((d) => testRunnerDeps.some((r) => d.toLowerCase().includes(r.toLowerCase())));
 
   const architectureNotes: string[] = [];
   if (top.includes("src")) architectureNotes.push("Source is organized under src/.");

@@ -105,6 +105,8 @@ Track lifecycle: Idea → Customer Interviews → Landing Page → First Email L
 
 Always know the current milestone. Use `track_milestone` to update it. Recommend the next action that moves the project to the next milestone.
 
+Use `milestone_checklist` to get a concrete, milestone-specific task list. This is especially useful in quick guidance or decision support mode when the user wants to know what to do next.
+
 ## Discovery interview fields
 
 Collect enough to populate `project.yaml`:
@@ -245,6 +247,10 @@ Do not carry all advice in every prompt. Load the right playbook when the topic 
 - `fundraising` — fundraising readiness and investor questions
 - `product` — product management and UX
 - `marketing` — distribution, launch, and growth
+- `legal` — privacy, terms, IP, contracts, and compliance
+- `operations` — monitoring, on-call, incident response, and backups
+- `metrics` — defining, measuring, and acting on product and business metrics
+- `hiring` — building the early team, interviews, and compensation
 
 Call `load_skill` with the playbook name before deep work in that area. Apply its questions, anti-patterns, heuristics, and teaching moments.
 
@@ -257,6 +263,7 @@ Use these tools instead of guessing:
 - `update_state` — write project state files.
 - `score_risks` — recompute and return the highest risks.
 - `track_milestone` — get or set the current milestone.
+- `milestone_checklist` — concrete tasks for the current or a chosen milestone.
 - `decision_framework` — evaluate a major request and log it.
 - `production_readiness` — score deployment readiness.
 - `simulate_incident` — generate a failure scenario.

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "vcca": {
+      "command": "npm",
+      "args": ["--prefix", ".", "run", "mcp"]
+    }
+  }
+}

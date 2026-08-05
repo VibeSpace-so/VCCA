@@ -902,6 +902,138 @@ const LESSONS: Record<string, { question: string; explanation: string; apply: st
       "Customer validation means testing demand with smoke tests, waitlists, or paid pre-orders before writing production code. It reduces the risk of building something no one buys.",
     apply: "Create the smallest test—landing page, waitlist, or pre-order—that validates the riskiest assumption.",
   },
+  caching: {
+    question: "What if every request hits the database?",
+    explanation:
+      "Caching stores frequently used data closer to where it is needed, so you can serve it faster and reduce load on expensive resources. It only helps when the cost of a cache miss is lower than the cost of fetching fresh data.",
+    apply: "Cache the most-read, slow-to-fetch data and set an explicit invalidation strategy.",
+  },
+  queues: {
+    question: "What if a user has to wait while you send 10,000 emails?",
+    explanation:
+      "A queue lets you hand work off to be processed later. It separates the work a user triggers from the time it takes to finish it, and it smooths out traffic spikes.",
+    apply: "Move any slow, retryable, or bulk work into a queue and process it in the background.",
+  },
+  webhooks: {
+    question: "How do you react to events that happen in another system?",
+    explanation:
+      "Webhooks are HTTP callbacks that another service calls when something happens. They push events to you instead of you polling for them. Because the internet is unreliable, you must handle duplicates, delays, and failures.",
+    apply: "Verify webhook signatures, make handlers idempotent, and return 2xx quickly.",
+  },
+  "database-indexing": {
+    question: "Why is this query getting slower as the table grows?",
+    explanation:
+      "A database index is a lookup structure that lets the database find rows without scanning the whole table. Indexes speed up reads and specific kinds of filters, but they slow down writes and take up space.",
+    apply: "Index the columns you query by most often, especially in WHERE, JOIN, and ORDER BY clauses.",
+  },
+  "load-balancing": {
+    question: "What if one server gets all the traffic?",
+    explanation:
+      "Load balancing spreads traffic across multiple servers so no single machine becomes a bottleneck. It also gives you a place to check health and remove failing instances.",
+    apply: "Put a load balancer in front of your app and add health checks so unhealthy instances stop receiving traffic.",
+  },
+  "secrets-management": {
+    question: "What if your API key is in a public GitHub repo?",
+    explanation:
+      "Secrets management means keeping credentials out of source code and injecting them at runtime from a trusted source. It includes rotation, access control, and audit logs.",
+    apply: "Move secrets to environment variables or a secret manager, rotate any exposed keys, and audit who has access.",
+  },
+  oauth: {
+    question: "Why does 'Sign in with Google' exist?",
+    explanation:
+      "OAuth is a protocol that lets users authorize your app to access their account on another service without giving you their password. It delegates authentication and lets users revoke access.",
+    apply: "Use a managed OAuth provider or library instead of building the flow yourself, and never store the provider's password.",
+  },
+  "api-design": {
+    question: "How do you design an API that is easy to use and hard to misuse?",
+    explanation:
+      "Good API design is about clear naming, consistent conventions, predictable errors, and versioning. It reduces integration time and support burden.",
+    apply: "Define resource names and error shapes, use plural nouns for collections, and version from day one.",
+  },
+  "cron-jobs": {
+    question: "What if you need to do something every night?",
+    explanation:
+      "A cron job is a scheduled task that runs at fixed times. It is useful for reports, cleanup, and batch work, but it can fail silently and is hard to debug.",
+    apply: "Add a heartbeat or log for each run, and make jobs idempotent in case they overlap or rerun.",
+  },
+  "ci-cd": {
+    question: "How do you stop broken code from reaching users?",
+    explanation:
+      "CI/CD is the practice of automatically building, testing, and deploying code. Continuous Integration catches errors before they merge; Continuous Delivery gets fixes to users quickly.",
+    apply: "Set up a pipeline that runs tests on every pull request and deploys automatically from main.",
+  },
+  observability: {
+    question: "How do you debug a problem you cannot see?",
+    explanation:
+      "Observability is the combination of metrics, logs, and traces that explain what your system is doing. It lets you ask new questions without shipping new code.",
+    apply: "Add structured logs, one or two key metrics, and a way to trace a request through your services.",
+  },
+  "monolith-vs-microservices": {
+    question: "Should you start with one big app or many small services?",
+    explanation:
+      "A monolith is one codebase and one deploy. Microservices split a system into independently deployable services. Microservices add operational overhead that is only worth it when a team is large or modules need different scaling.",
+    apply: "Start with a monolith. Split a service out only when one team or module is clearly held back by the shared deploy.",
+  },
+  "database-migrations": {
+    question: "How do you change the database without breaking the app?",
+    explanation:
+      "Database migrations are versioned scripts that apply schema changes. Backward-compatible migrations let old code keep running while new code is deployed.",
+    apply: "Add a migration tool, run migrations before code deploys, and avoid destructive changes in the same deploy as code that uses them.",
+  },
+  "connection-pooling": {
+    question: "Why is your database running out of connections?",
+    explanation:
+      "Connection pooling reuses database connections instead of opening a new one for every request. It reduces overhead and prevents the database from being overwhelmed.",
+    apply: "Use a connection pool in your database driver and size it to your worker count.",
+  },
+  "testing-pyramid": {
+    question: "How many unit tests versus end-to-end tests should you write?",
+    explanation:
+      "The testing pyramid says write many fast, isolated unit tests, fewer integration tests, and very few slow end-to-end tests. This gives you confidence without slow, flaky suites.",
+    apply: "Write unit tests for business logic, integration tests for database and API boundaries, and end-to-end tests for the critical user path.",
+  },
+  "state-management": {
+    question: "Where does the truth live?",
+    explanation:
+      "State management is the discipline of deciding where data is stored, who can change it, and how changes flow through your system. Single sources of truth reduce bugs.",
+    apply: "Pick one source of truth for each entity, make state changes explicit, and avoid duplicating state that can get out of sync.",
+  },
+  "authentication-vs-authorization": {
+    question: "Who are you, and what are you allowed to do?",
+    explanation:
+      "Authentication is verifying identity. Authorization is deciding what that identity is allowed to do. Mixing them leads to security holes.",
+    apply: "Separate login/authentication from permissions/authorization, and check both on every sensitive action.",
+  },
+  "north-star-metric": {
+    question: "What is the one number that tells you the product is working?",
+    explanation:
+      "A north-star metric is the single outcome that captures the core value your product delivers. It aligns the team around what matters most.",
+    apply: "Define one north-star metric and a small set of input metrics that drive it.",
+  },
+  "activation": {
+    question: "When does a new user first feel value?",
+    explanation:
+      "Activation is the moment a user experiences the product's core value. Users who activate are far more likely to retain.",
+    apply: "Identify the minimum actions a new user must take to activate and optimize your onboarding for that moment.",
+  },
+  retention: {
+    question: "Why do users come back?",
+    explanation:
+      "Retention measures how many users return over time. It is one of the best signals of product-market fit and sustainable growth.",
+    apply: "Track cohort retention, find the drop-off point, and improve the experience around the first few uses.",
+  },
+  "smoke-test": {
+    question: "Can you sell it before you build it?",
+    explanation:
+      "A smoke test is a lightweight experiment that checks if demand exists before you build. It can be a landing page, waitlist, or pre-order.",
+    apply: "Create the smallest artifact that proves demand before writing production code.",
+  },
+  "pivot": {
+    question: "What if the idea is not working?",
+    explanation:
+      "A pivot is a structured change to one part of the business model while keeping the vision. It is not a random restart; it is a hypothesis-driven change.",
+    apply: "Pivot when the data shows a better customer, problem, or channel, not because building is hard.",
+  },
 };
 
 const teachConceptTool: VccaTool = {
@@ -909,7 +1041,12 @@ const teachConceptTool: VccaTool = {
   description:
     "Prepare a two-minute lesson for a concept. Returns a question, a short explanation, and an immediate application step.",
   inputSchema: z.object({
-    concept: z.string().min(1).describe("Concept to teach, e.g. idempotency, rate-limiting, health-checks."),
+    concept: z
+      .string()
+      .min(1)
+      .describe(
+        "Concept to teach, e.g. idempotency, rate limiting, health checks, caching, queues, webhooks, database indexing, load balancing, OAuth, API design, CI/CD, observability, feature flags, database migrations, testing pyramid, north star metric, activation, retention, smoke test, pivot."
+      ),
     apply_to: z.string().optional().describe("Optional project context to tailor the application step."),
   }),
   outputSchema: z.object({
@@ -918,13 +1055,143 @@ const teachConceptTool: VccaTool = {
     apply: z.string(),
   }),
   async execute({ concept, apply_to }) {
-    const lesson = LESSONS[concept.toLowerCase()] || {
+    const normalized = concept.toLowerCase().replace(/\s+/g, "-").trim();
+    const lesson = LESSONS[normalized] || {
       question: `What is the most important thing to understand about ${concept}?`,
       explanation: `${concept} is a tool or principle. The key is to use it only when it reduces a real risk, not because it is interesting.`,
       apply: `Find one place in your project where ignoring ${concept} would cause a failure, and fix that first.`,
     };
     const apply = apply_to ? `${lesson.apply} In your case: ${apply_to}.` : lesson.apply;
     return sanitizeOutput({ question: lesson.question, explanation: lesson.explanation, apply });
+  },
+};
+
+// =============================================================================
+// milestone_checklist
+// =============================================================================
+
+const MILESTONE_CHECKLISTS: Record<Milestone, string[]> = {
+  Idea: [
+    "Write a one-sentence description of the problem you want to solve.",
+    "Name the specific person or group who has this problem.",
+    "Describe how they solve it today, even badly.",
+    "List the riskiest assumptions you are making.",
+    "Set a single current goal for the next 2 weeks.",
+  ],
+  "Customer Interviews": [
+    "Find 5 people who match your target customer.",
+    "Prepare 5 open-ended questions about their problem and current workaround.",
+    "Run the interviews and take notes on jobs, pains, and gains.",
+    "Synthesize patterns across interviews, not just one quote.",
+    "Validate or invalidate each riskiest assumption.",
+    "Decide whether to proceed, pivot, or stop.",
+  ],
+  "Landing Page": [
+    "Write a clear value proposition: problem, solution, and outcome.",
+    "Design a single page with a headline, proof, and one call to action.",
+    "Add a signup, waitlist, or pre-order form.",
+    "Set up basic analytics to track visits and conversions.",
+    "Share the page with 50 potential customers.",
+  ],
+  "First Email List": [
+    "Launch the landing page with a channel your target customer uses.",
+    "Collect the first 50 emails or signups.",
+    "Send a welcome email that reinforces the problem and expected solution.",
+    "Segment signups by source or motivation.",
+    "Identify 5 people willing to do a deeper interview.",
+  ],
+  MVP: [
+    "Define the smallest end-to-end flow that solves one validated problem.",
+    "Choose the simplest stack that supports the core flow.",
+    "Build the happy path first; defer edge cases.",
+    "Add one path for each: create, read, update, delete if needed.",
+    "Run the flow with 3 target users before declaring it done.",
+    "Collect and prioritize the top 3 pieces of feedback.",
+  ],
+  "First Users": [
+    "Invite 5 target users to try the MVP.",
+    "Watch them complete the core flow without coaching.",
+    "Measure activation: did they experience the core value?",
+    "Fix the top 3 blockers that stop users from activating.",
+    "Set up a feedback loop: email, in-app, or interview.",
+  ],
+  "First Paying User": [
+    "Identify 3 users who get the most value from the product.",
+    "Ask them to pay before the feature is fully built.",
+    "Set up payment processing and invoicing.",
+    "Deliver the promised value and collect a testimonial.",
+    "Document why they paid and what almost stopped them.",
+  ],
+  Retention: [
+    "Define a cohort retention chart and pick a time period (e.g., 7-day).",
+    "Measure where users drop off in their first week.",
+    "Interview 5 users who stuck around and 5 who left.",
+    "Fix the biggest drop-off point with the smallest change.",
+    "Re-measure retention to confirm the improvement.",
+  ],
+  "PMF Signals": [
+    "Track organic referrals and word-of-mouth growth.",
+    "Measure retention, usage frequency, and top user actions.",
+    "Identify the segment of users that cannot live without the product.",
+    "Calculate unit economics: CAC, LTV, payback period.",
+    "Double down on the channel and customer that is working.",
+  ],
+  Growth: [
+    "Find the one distribution channel that is already working.",
+    "Build a repeatable process for acquiring users through that channel.",
+    "Add growth loops: referrals, virality, content, or integrations.",
+    "Hire or automate the operational bottlenecks.",
+    "Set a monthly growth target and review it weekly.",
+  ],
+};
+
+const VALID_MILESTONES_LIST_2 = MILESTONES.join(", ");
+
+const milestoneChecklistTool: VccaTool = {
+  name: "milestone_checklist",
+  description:
+    "Get a concrete checklist for a given milestone. If project_path is provided, uses the current milestone; otherwise uses the milestone argument.",
+  inputSchema: z.object({
+    milestone: z
+      .string()
+      .optional()
+      .describe(`Milestone to get a checklist for. Valid values: ${VALID_MILESTONES_LIST_2}.`),
+    project_path: z
+      .string()
+      .optional()
+      .describe("Path to the project directory. Optional; if provided the current milestone is used."),
+  }),
+  outputSchema: z.object({
+    milestone: z.string(),
+    checklist: z.array(z.string()),
+    focus: z.array(z.string()),
+    summary: z.string(),
+  }),
+  async execute({ milestone, project_path }) {
+    let current: Milestone | undefined = milestone as Milestone | undefined;
+
+    if (project_path) {
+      try {
+        const ms = await loadMilestones(project_path);
+        if (ms?.current) current = ms.current;
+      } catch {
+        // ignore
+      }
+    }
+
+    if (!current || !MILESTONES.includes(current as Milestone)) {
+      current = "Idea";
+    }
+
+    const checklist = MILESTONE_CHECKLISTS[current] || [];
+    const focus = checklist.slice(0, 3);
+
+    return sanitizeOutput({
+      milestone: current,
+      checklist,
+      focus,
+      summary: `Milestone: ${current}. Top 3 focus: ${focus.join("; ")}.`,
+    });
   },
 };
 
@@ -960,14 +1227,14 @@ const repoReviewTool: VccaTool = {
     if (allDeps.length === 0) architecture.push("No manifest dependencies detected; verify project setup.");
 
     const security: string[] = [...summary.security_notes];
-    if (!summary.has_auth) security.push("No auth library detected. Add auth before collecting sensitive data.");
-    if (!summary.has_rate_limiting) security.push("No rate limiting detected. Add it to public endpoints.");
-    if (!summary.has_error_reporting) security.push("No error reporting service detected. Use Sentry or similar to catch issues.");
+    if (!summary.has_error_reporting) {
+      security.push("No error reporting service detected. Use Sentry or similar to catch issues before users do.");
+    }
 
     const deployment: string[] = [...summary.deployment_notes];
-    if (!summary.has_ci_cd) deployment.push("No CI/CD config. Add GitHub Actions, GitLab CI, or similar.");
-    if (!summary.has_docker) deployment.push("No Docker or docker-compose. Consider containerization for parity.");
-    if (!summary.has_migrations) deployment.push("No database migration directory. Add a migration strategy.");
+    if (!summary.has_health_endpoint && summary.has_ci_cd) {
+      deployment.push("CI/CD exists but no health endpoint detected. Add /health before going live.");
+    }
 
     const tests: string[] = [];
     if (!summary.has_tests) tests.push("No tests or test directories found. Add unit or e2e tests for the critical path.");
@@ -976,7 +1243,7 @@ const repoReviewTool: VccaTool = {
     }
 
     const debt: string[] = [];
-    if (summary.todos.length > 5) debt.push(`${summary.todos.length} open TODOs/FIXMEs. Review and schedule or close them.`);
+    if (summary.todos.length > 0) debt.push(`${summary.todos.length} open TODOs/FIXMEs. Review, schedule, or close them.`);
 
     const docs: string[] = [];
     if (!summary.has_readme) docs.push("Missing README. Add what the project does and how to run it.");
@@ -990,6 +1257,9 @@ const repoReviewTool: VccaTool = {
     }
     if (allDeps.some((d) => /postgres|mysql|mongo/i.test(d))) {
       scaling.push("Database in use. Plan connection pooling, indexes, and read replicas before scaling.");
+    }
+    if (summary.dependencies.includes("sqlite3") && !summary.has_migrations) {
+      scaling.push("SQLite is included but there is no migration strategy. Plan how schema changes will be applied.");
     }
 
     const top = [
@@ -1029,6 +1299,7 @@ export const vccaTools = {
   simulate_incident: simulateIncidentTool,
   weekly_review: weeklyReviewTool,
   teach_concept: teachConceptTool,
+  milestone_checklist: milestoneChecklistTool,
   repo_review: repoReviewTool,
 } as const;
 
