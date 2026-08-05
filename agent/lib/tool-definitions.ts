@@ -494,9 +494,9 @@ const TIME_VALUES = { hours: 1, days: 2, weeks: 3, months: 4 };
 const decisionFrameworkTool: VccaTool = {
   name: "decision_framework",
   description:
-    "Evaluate a major request through the VCCA decision framework and log the recommendation to .vcca/decisions.md.",
+    "Evaluate a major request through the VCCA decision framework. If a project path is provided, the recommendation is logged to .vcca/decisions.md.",
   inputSchema: z.object({
-    project_path: z.string().min(1).describe("Path to the project directory."),
+    project_path: z.string().optional().describe("Path to the project directory. Optional; if omitted the recommendation is returned without logging."),
     request: z.string().min(1).describe("The request or proposal being evaluated."),
     business_impact: z.enum(LEVELS).describe("Business impact: low, medium, high, critical."),
     technical_impact: z.enum(LEVELS).describe("Technical impact: low, medium, high, critical."),
@@ -509,6 +509,7 @@ const decisionFrameworkTool: VccaTool = {
     recommendation: z.string(),
     rationale: z.string(),
     proceed: z.enum(["yes", "spike", "no"]),
+    logged: z.boolean().optional(),
   }),
   async execute(input: any) {
     const {
@@ -521,7 +522,7 @@ const decisionFrameworkTool: VccaTool = {
       time,
       alternatives,
     } = input as {
-      project_path: string;
+      project_path?: string;
       request: string;
       business_impact: keyof typeof LEVEL_VALUES;
       technical_impact: keyof typeof LEVEL_VALUES;
@@ -563,9 +564,12 @@ const decisionFrameworkTool: VccaTool = {
       `Proceed recommendation: ${proceed}.`,
     ].join(" ");
 
-    await appendDecision(project_path, request, recommendation, rationale);
+    const logged = Boolean(project_path);
+    if (project_path) {
+      await appendDecision(project_path, request, recommendation, rationale);
+    }
 
-    return sanitizeOutput({ recommendation, rationale, proceed });
+    return sanitizeOutput({ recommendation, rationale, proceed, logged });
   },
 };
 
