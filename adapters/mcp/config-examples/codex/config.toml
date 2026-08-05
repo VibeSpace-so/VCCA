@@ -1,0 +1,3 @@
+[mcp_servers.vcca]
+command = "npm"
+args = ["--prefix", "C:\\Users\\mathe\\Projects\\VCCA", "run", "mcp"]

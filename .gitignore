@@ -1,0 +1,11 @@
+node_modules
+.output
+.mcp-output
+.eve
+.env
+.env.local
+*.log
+.DS_Store
+Thumbs.db
+.vcca
+coverage

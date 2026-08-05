@@ -1,0 +1,35 @@
+{
+  "name": "vcca",
+  "version": "0.1.0",
+  "description": "Vibe Coding Compass Agent — an AI execution companion for software founders and vibe coders.",
+  "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "dev": "eve dev",
+    "build": "eve build",
+    "start": "eve start",
+    "acp": "eve acp",
+    "mcp": "npx tsc -p tsconfig.mcp.json && node .mcp-output/adapters/mcp/server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "ai": "^7.0.52",
+    "eve": "^0.30.8",
+    "yaml": "^2.5.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  },
+  "keywords": [
+    "agent",
+    "startup",
+    "vibe-coding",
+    "advisor",
+    "ai"
+  ],
+  "license": "MIT"
+}

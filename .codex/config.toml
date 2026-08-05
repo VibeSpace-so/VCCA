@@ -1,0 +1,4 @@
+[mcp_servers.vcca]
+command = "npm"
+args = ["run", "mcp"]
+cwd = "."

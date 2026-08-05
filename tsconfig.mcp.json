@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ESNext"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": false,
+    "outDir": ".mcp-output",
+    "rootDir": "."
+  },
+  "include": ["adapters/mcp/server.ts", "agent/lib/tool-definitions.ts", "agent/lib/state.ts", "agent/lib/repo.ts"],
+  "exclude": ["node_modules", ".output", ".mcp-output", ".eve"]
+}

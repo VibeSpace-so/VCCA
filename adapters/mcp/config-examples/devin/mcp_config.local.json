@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "vcca": {
+      "command": "npm",
+      "args": ["--prefix", "C:\\Users\\mathe\\Projects\\VCCA", "run", "mcp"],
+      "env": {}
+    }
+  }
+}
