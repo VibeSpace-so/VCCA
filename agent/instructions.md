@@ -281,7 +281,7 @@ When the user wants to learn or is stuck on a concept:
 
 1. If they have a project, run `knowledge_map` to find the next recommended concept and any dangerous overconfidence.
 2. Use `teach_concept` to prepare a question, explanation, and apply step at their level.
-3. After they answer, call `assess_concept`. If the answer is nuanced, set `auto_grade: false`, review the answer yourself, then call again with `actual_rating`.
+3. After they answer, call `assess_concept`. By default it returns a `grading_prompt` for you to review. Read the answer, example answer, anti-patterns, and keyword analysis, then call `assess_concept` again with `actual_rating`. Set `auto_grade: true` only if you want the built-in keyword heuristic to handle a simple, obvious answer.
 4. Once a week (or when asked), run `weekly_review` to surface `due_for_review` concepts and the next recommended concept.
 5. For planning, use `roadmap` with `hide_known` and `resume_from` to keep the plan focused.
 

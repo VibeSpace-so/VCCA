@@ -1,6 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import {
+  assessConcept,
   buildRoadmap,
   classifyStatus,
   conceptImportanceForMilestone,
@@ -11,6 +15,7 @@ import {
 } from "./knowledge.js";
 import { getLesson } from "./concept-catalog.js";
 import type { KnowledgeMap, KnowledgeStatus } from "./state.js";
+import { ensureVccaDir } from "./state.js";
 
 describe("classifyStatus", () => {
   it("marks verified when self and actual are strong", () => {
@@ -114,5 +119,37 @@ describe("getEffectiveLevel", () => {
   });
   it("uses provided override", () => {
     assert.equal(getEffectiveLevel("senior", { experience_level: "some_code" } as any), "senior");
+  });
+});
+
+describe("assessConcept", () => {
+  it("returns a grading_prompt and does not commit a grade by default", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "vcca-assess-"));
+    await ensureVccaDir(tmp);
+    const result = await assessConcept(tmp, "smoke-test", 5, "It is when you test your code before deploying it.");
+    assert.equal(result.needs_review, true);
+    assert.ok(result.grading_prompt);
+    assert.ok(result.grading_prompt?.includes("smoke test"));
+    assert.ok(result.answer_analysis);
+    // Clean up.
+    await fs.rm(tmp, { recursive: true, force: true });
+  });
+
+  it("auto-grades when autoGrade is true", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "vcca-assess-"));
+    await ensureVccaDir(tmp);
+    const result = await assessConcept(
+      tmp,
+      "smoke-test",
+      4,
+      "A smoke test is a small, cheap experiment to prove demand before you build, like a landing page or waitlist.",
+      undefined,
+      undefined,
+      true
+    );
+    assert.equal(result.needs_review, false);
+    assert.ok(!result.grading_prompt);
+    assert.equal(result.status, "verified");
+    await fs.rm(tmp, { recursive: true, force: true });
   });
 });
