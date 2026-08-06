@@ -1054,9 +1054,39 @@ export interface AssessmentResult {
   suggested_actual_rating: number;
   needs_review: boolean;
   answer_analysis?: AnswerAnalysis;
+  grading_prompt?: string;
   gap: string;
   recommended_action: string;
   evidence: KnowledgeEntry["evidence"];
+}
+
+function buildGradingPrompt(input: {
+  concept: string;
+  question?: string;
+  example_answer?: string;
+  anti_patterns?: string[];
+  answer?: string;
+  self_rating: number;
+  answer_analysis?: AnswerAnalysis;
+  lesson: Lesson;
+}): string {
+  const { concept, question, example_answer, anti_patterns, answer, self_rating, answer_analysis, lesson } = input;
+  const display = concept.replace(/-/g, " ");
+  return `You are grading a self-assessment for the concept "${display}".
+
+The user self-rated ${self_rating}/5.
+
+The self-check question was: ${question || lesson.question}
+
+Example answer: ${example_answer || lesson.explanation}
+
+${anti_patterns?.length ? `Anti-patterns to watch for:\n${anti_patterns.map((p) => `- ${p}`).join("\n")}` : ""}
+
+The user's answer: "${answer || "(no answer provided)"}"
+
+Keyword analysis: score ${answer_analysis?.score ?? 1}, confidence ${answer_analysis?.confidence ?? "low"}, matched terms [${(answer_analysis?.matched_terms ?? []).join(", ")}], anti-hits [${(answer_analysis?.anti_hits ?? []).join(", ")}].
+
+Read the answer carefully. Rate the user's actual understanding on a scale of 1-5, where 1 is almost no understanding, 3 can explain the basics, and 5 can apply it to a real production situation. Then call assess_concept with the same concept and project_path, answer, and self_rating, plus actual_rating set to your rating. Be stricter if the answer contains an anti-pattern or misses the core trade-off.`;
 }
 
 export async function assessConcept(
@@ -1066,7 +1096,7 @@ export async function assessConcept(
   answer?: string,
   repo?: RepoSummary,
   agentActualRating?: number,
-  autoGrade = true
+  autoGrade = false
 ): Promise<AssessmentResult> {
   const [profile, knowledgeRaw] = await Promise.all([
     loadProfile(projectPath).catch(() => null),
@@ -1110,6 +1140,19 @@ export async function assessConcept(
     evidence.push("agent");
   }
 
+  // When the host LLM should grade instead of the heuristic.
+  // If an answer is given, auto-grading is off, and there is no strong repo/profile/agent evidence,
+  // the tool asks the LLM to review and call back with actual_rating.
+  const needsReview = Boolean(answer) && !agentActualRating && !autoGrade;
+
+  // If we are asking for review and there is no objective evidence, leave status as unknown
+  // so the user is not incorrectly labeled overconfident before the LLM grades.
+  if (needsReview && actual === 1) {
+    actual = 1;
+    evidence.length = 0;
+    evidence.push("self_report");
+  }
+
   const status = classifyStatus(selfRating, actual);
   const gap = buildGapMessage({
     concept: normalized,
@@ -1121,8 +1164,17 @@ export async function assessConcept(
     notes: repoSignal?.evidence,
   });
   const recommended_action = recommendAction(status, normalized, lesson);
-  // Flag for review when an answer was given but not graded by the agent and the heuristic is uncertain.
-  const needs_review = Boolean(answer) && !agentActualRating && (Math.abs(selfRating - suggested) > 1 || suggested === 3);
+
+  const grading_prompt = buildGradingPrompt({
+    concept: normalized,
+    question: lesson.question,
+    example_answer: lesson.example_answer,
+    anti_patterns: lesson.anti_patterns,
+    answer,
+    self_rating: selfRating,
+    answer_analysis: answerAnalysis,
+    lesson,
+  });
 
   knowledge[normalized] = {
     concept: normalized,
@@ -1137,7 +1189,18 @@ export async function assessConcept(
 
   await writeKnowledge(projectPath, knowledge);
 
-  return { status, self_rating: selfRating, actual_rating: actual, suggested_actual_rating: suggested, needs_review, answer_analysis: answerAnalysis, gap, recommended_action, evidence };
+  return {
+    status,
+    self_rating: selfRating,
+    actual_rating: actual,
+    suggested_actual_rating: suggested,
+    needs_review: needsReview,
+    answer_analysis: answerAnalysis,
+    grading_prompt: needsReview ? grading_prompt : undefined,
+    gap,
+    recommended_action,
+    evidence,
+  };
 }
 
 function daysSince(iso?: string): number {

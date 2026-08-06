@@ -1076,14 +1076,14 @@ const onboardUserTool: VccaTool = {
 const assessConceptTool: VccaTool = {
   name: "assess_concept",
   description:
-    "Record a user's self-assessment and answer for a concept, compare it to repo/profile evidence, and return a calibrated status (overconfident, shaky, verified, etc). If the answer is nuanced, set auto_grade=false and provide an actual_rating after reviewing the answer. Writes the result to .vcca/knowledge.yaml.",
+    "Record a user's self-assessment and answer for a concept, then return the rubric, example answer, anti-patterns, and a grading prompt for the host LLM. By default the tool does not commit a grade; the LLM should review the grading_prompt and call back with actual_rating. Set auto_grade=true to use the built-in keyword heuristic. Writes the result to .vcca/knowledge.yaml.",
   inputSchema: z.object({
     project_path: z.string().min(1).describe("Path to the project directory."),
     concept: z.string().min(1).describe("Concept being assessed."),
     self_rating: z.number().min(1).max(5).describe("How confident the user feels, 1-5."),
     answer: z.string().optional().describe("The user's answer to the self-check question."),
     actual_rating: z.number().min(1).max(5).optional().describe("Optional agent-graded actual understanding (1-5). Use when the answer is nuanced."),
-    auto_grade: z.boolean().optional().describe("If true (default), the tool will auto-score the answer. If false, it records the answer and returns a suggested rating for the agent to confirm."),
+    auto_grade: z.boolean().optional().describe("If true, the tool commits the keyword heuristic score as the actual rating. If false (default), the tool returns a grading_prompt for the host LLM and asks it to call back with actual_rating."),
     evidence: z.string().optional().describe("Optional free-form evidence the user provided."),
   }),
   outputSchema: z.object({
@@ -1094,6 +1094,7 @@ const assessConceptTool: VccaTool = {
     suggested_actual_rating: z.number().optional(),
     needs_review: z.boolean().optional(),
     answer_analysis: z.any().optional(),
+    grading_prompt: z.string().optional(),
     gap: z.string(),
     recommended_action: z.string(),
     evidence: z.array(z.string()).optional(),
@@ -1101,7 +1102,7 @@ const assessConceptTool: VccaTool = {
   }),
   async execute({ project_path, concept, self_rating, answer, actual_rating, auto_grade, evidence }) {
     const repo = await analyzeRepo(project_path).catch(() => undefined);
-    const result = await assessConcept(project_path, concept, self_rating, answer, repo, actual_rating, auto_grade ?? true);
+    const result = await assessConcept(project_path, concept, self_rating, answer, repo, actual_rating, auto_grade ?? false);
     const knowledge = (await loadKnowledge(project_path).catch(() => ({}))) || {};
     const tendency = updateConfidenceTendency(knowledge);
     const existingProfile = await loadProfile(project_path).catch(() => null);
