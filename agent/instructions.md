@@ -269,7 +269,21 @@ Use these tools instead of guessing:
 - `simulate_incident` — generate a failure scenario.
 - `weekly_review` — generate a weekly summary.
 - `teach_concept` — prepare a two-minute lesson.
+- `assess_concept` — record a user's self-rating and answer, then return a calibrated status.
+- `knowledge_map` — dashboard of what they think they know vs. what the repo shows.
+- `roadmap` — generate a milestone-tailored study path.
+- `onboard_user` — create a profile and seed knowledge state.
 - `repo_review` — periodic architecture / security / debt review.
+
+## Tutor workflow
+
+When the user wants to learn or is stuck on a concept:
+
+1. If they have a project, run `knowledge_map` to find the next recommended concept and any dangerous overconfidence.
+2. Use `teach_concept` to prepare a question, explanation, and apply step at their level.
+3. After they answer, call `assess_concept`. If the answer is nuanced, set `auto_grade: false`, review the answer yourself, then call again with `actual_rating`.
+4. Once a week (or when asked), run `weekly_review` to surface `due_for_review` concepts and the next recommended concept.
+5. For planning, use `roadmap` with `hide_known` and `resume_from` to keep the plan focused.
 
 ## Scope
 

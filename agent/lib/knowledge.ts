@@ -7,6 +7,7 @@ import {
   type KnowledgeStatus,
   type Milestone,
   type Profile,
+  type ReviewIntervals,
   loadKnowledge,
   loadMilestones,
   loadProfile,
@@ -447,15 +448,29 @@ function tokens(text: string): Set<string> {
   return new Set(cleaned.filter((w) => w.length > 2 && !STOPWORDS.has(w)));
 }
 
-function phraseHits(text: string, phrases: string[]): number {
+function phraseHits(text: string, phrases: string[]): string[] {
   const lower = text.toLowerCase();
-  return phrases.filter((p) => lower.includes(p.toLowerCase())).length;
+  return phrases.filter((p) => lower.includes(p.toLowerCase()));
 }
 
-export function evaluateAnswer(answer: string, lesson: Lesson): number {
-  if (!answer || answer.trim().length < 10) return 1;
+export interface AnswerAnalysis {
+  score: number;
+  confidence: "low" | "medium" | "high";
+  matched_terms: string[];
+  anti_hits: string[];
+  positive_ratio: number;
+  negative_ratio: number;
+  nuance: string;
+}
+
+export function evaluateAnswerDetails(answer: string, lesson: Lesson): AnswerAnalysis {
+  if (!answer || answer.trim().length < 10) {
+    return { score: 1, confidence: "low", matched_terms: [], anti_hits: [], positive_ratio: 0, negative_ratio: 0, nuance: "Answer too short to evaluate." };
+  }
   const answerTokens = tokens(answer);
-  if (answerTokens.size === 0) return 1;
+  if (answerTokens.size === 0) {
+    return { score: 1, confidence: "low", matched_terms: [], anti_hits: [], positive_ratio: 0, negative_ratio: 0, nuance: "No evaluable words in answer." };
+  }
 
   // Build a model answer and anti-patterns, falling back to explanation / misconception.
   const example = lesson.example_answer || lesson.explanation || "";
@@ -470,10 +485,14 @@ export function evaluateAnswer(answer: string, lesson: Lesson): number {
   const antiText = antiPatterns.join(" ");
   const antiTokens = tokens(antiText);
 
+  const matchedTerms: string[] = [];
   let positive = 0;
   let negative = 0;
   for (const t of answerTokens) {
-    if (exampleTokens.has(t)) positive++;
+    if (exampleTokens.has(t)) {
+      positive++;
+      matchedTerms.push(t);
+    }
     if (antiTokens.has(t)) negative++;
   }
 
@@ -490,16 +509,45 @@ export function evaluateAnswer(answer: string, lesson: Lesson): number {
   else score = 5;
 
   // If the user parrots an anti-pattern or the negative signal is strong, cap the score.
-  if (antiHits > 0 || negativeRatio > 0.3) {
-    return Math.min(score, 2);
+  if (antiHits.length > 0 || negativeRatio > 0.3) {
+    score = Math.min(score, 2);
   }
 
   // If they hit a very high positive match with no anti-pattern, promote to verified.
-  if (positiveRatio >= 0.6 && !antiHits) {
-    return Math.max(score, 5);
+  if (positiveRatio >= 0.6 && !antiHits.length) {
+    score = Math.max(score, 5);
   }
 
-  return score;
+  // Confidence is low if score is 3 and ratios are mixed, high if at the extremes, medium otherwise.
+  let confidence: AnswerAnalysis["confidence"];
+  if (score <= 2 || score >= 5) confidence = "high";
+  else if (Math.abs(positiveRatio - negativeRatio) < 0.15) confidence = "low";
+  else confidence = "medium";
+
+  const nuance =
+    antiHits.length
+      ? `Answer repeats an anti-pattern (${antiHits.join(", ")}), so it is capped low. Review the apply step.`
+      : score >= 5
+        ? "Answer aligns strongly with the model answer."
+        : score >= 4
+          ? "Answer captures the core idea but may miss edge cases."
+          : score >= 3
+            ? "Answer touches the topic but has gaps or mixed signals."
+            : "Answer is missing the core concept or using it incorrectly.";
+
+  return {
+    score,
+    confidence,
+    matched_terms: matchedTerms.slice(0, 10),
+    anti_hits: antiHits,
+    positive_ratio: positiveRatio,
+    negative_ratio: negativeRatio,
+    nuance,
+  };
+}
+
+export function evaluateAnswer(answer: string, lesson: Lesson): number {
+  return evaluateAnswerDetails(answer, lesson).score;
 }
 
 function actualRatingFromRepo(concept: string, repo: RepoSummary | undefined): { rating: number; evidence: string } | null {
@@ -1005,6 +1053,7 @@ export interface AssessmentResult {
   actual_rating: number;
   suggested_actual_rating: number;
   needs_review: boolean;
+  answer_analysis?: AnswerAnalysis;
   gap: string;
   recommended_action: string;
   evidence: KnowledgeEntry["evidence"];
@@ -1029,11 +1078,13 @@ export async function assessConcept(
 
   let actual = 1;
   let suggested = 1;
+  let answerAnalysis: AnswerAnalysis | undefined;
   const evidence: KnowledgeEntry["evidence"] = ["self_report"];
 
   // Compute a suggested rating from the answer, but do not commit it unless auto-grading is on.
   if (answer) {
-    suggested = evaluateAnswer(answer, lesson);
+    answerAnalysis = evaluateAnswerDetails(answer, lesson);
+    suggested = answerAnalysis.score;
   }
 
   // If the agent has already evaluated the answer, trust that.
@@ -1086,7 +1137,7 @@ export async function assessConcept(
 
   await writeKnowledge(projectPath, knowledge);
 
-  return { status, self_rating: selfRating, actual_rating: actual, suggested_actual_rating: suggested, needs_review, gap, recommended_action, evidence };
+  return { status, self_rating: selfRating, actual_rating: actual, suggested_actual_rating: suggested, needs_review, answer_analysis: answerAnalysis, gap, recommended_action, evidence };
 }
 
 function daysSince(iso?: string): number {
@@ -1096,14 +1147,16 @@ function daysSince(iso?: string): number {
   return (Date.now() - then) / (1000 * 60 * 60 * 24);
 }
 
-export function isDueForReview(entry: KnowledgeEntry): boolean {
+export function isDueForReview(entry: KnowledgeEntry, intervals?: ReviewIntervals): boolean {
   const status = entry.status;
   const d = daysSince(entry.last_interaction);
-  if (status === "verified") return d > 14;
-  if (status === "aware") return d > 7;
-  if (status === "shaky") return d > 3;
-  if (status === "overconfident") return d > 3;
-  return false;
+  const threshold =
+    status === "verified" ? (intervals?.verified ?? 14) :
+    status === "aware" ? (intervals?.aware ?? 7) :
+    status === "shaky" ? (intervals?.shaky ?? 3) :
+    status === "overconfident" ? (intervals?.overconfident ?? 3) :
+    Infinity;
+  return d > threshold;
 }
 
 export interface KnowledgeMapView {
@@ -1122,9 +1175,15 @@ export interface KnowledgeMapView {
   summary: string;
 }
 
+export interface BuildKnowledgeMapOptions {
+  category?: ConceptCategory;
+  summaryOnly?: boolean;
+}
+
 export async function buildKnowledgeMap(
   projectPath: string,
-  repo?: RepoSummary
+  repo?: RepoSummary,
+  options?: BuildKnowledgeMapOptions
 ): Promise<KnowledgeMapView> {
   const [profile, knowledgeRaw, project, milestones] = await Promise.all([
     loadProfile(projectPath).catch(() => null),
@@ -1143,6 +1202,9 @@ export async function buildKnowledgeMap(
   const dueForReview: KnowledgeMapView["due_for_review"] = [];
 
   for (const concept of ALL_CONCEPTS) {
+    const conceptCategory = getConceptCategory(concept);
+    if (options?.category && conceptCategory !== options.category) continue;
+
     const lesson = getLesson(concept);
     const entry = knowledge[concept] || { concept };
     // Compute actual from the strongest available evidence.
@@ -1165,13 +1227,15 @@ export async function buildKnowledgeMap(
     entry.evidence = evidence;
 
     const importance = conceptImportanceForMilestone(concept, milestone, lesson);
-    concepts.push({
-      concept,
-      status: entry.status || "unknown",
-      self_rating: entry.self_rating,
-      actual_rating: entry.actual_rating,
-      importance,
-    });
+    if (!options?.summaryOnly) {
+      concepts.push({
+        concept,
+        status: entry.status || "unknown",
+        self_rating: entry.self_rating,
+        actual_rating: entry.actual_rating,
+        importance,
+      });
+    }
     byStatus[entry.status || "unknown"].push(concept);
 
     if ((["unknown", "shaky", "overconfident"] as KnowledgeStatus[]).includes(entry.status || "unknown") && importance >= 2) {
@@ -1184,7 +1248,7 @@ export async function buildKnowledgeMap(
       studyQueue.push({ concept, status: entry.status, importance, why });
     }
 
-    if (isDueForReview(entry)) {
+    if (isDueForReview(entry, profile?.review_intervals)) {
       dueForReview.push({ concept, status: entry.status || "unknown", days_since: daysSince(entry.last_interaction) });
     }
   }

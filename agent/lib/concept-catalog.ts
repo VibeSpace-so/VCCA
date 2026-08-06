@@ -992,16 +992,70 @@ function splitByOrder(list: string[], concept: string): { prereqs: string[]; nex
   return { prereqs: list.slice(0, half), next: list.slice(half) };
 }
 
+const ANTI_PATTERNS: Record<ConceptCategory, string[]> = {
+  product: ["build the full product before talking to users", "assume your own problem is everyone else's", "copy a competitor without understanding why"],
+  business: ["price based on cost instead of value", "focus on revenue before product-market fit", "ignore runway and burn rate"],
+  security: ["ignore security until you have users", "trust the frontend to enforce rules", "store secrets in code or config files"],
+  scaling: ["add servers without measuring bottlenecks", "cache everything forever without invalidation", "scale before you have traction"],
+  data: ["store everything without a retention plan", "query production without indexes", "treat the database as a message queue"],
+  reliability: ["deploy manually without tests", "ignore logs until something breaks", "skip health checks to save time"],
+  architecture: ["build microservices from day one", "over-engineer before you know the domain", "hard-code assumptions that will change"],
+  engineering: ["write code without tests", "skip documentation because you will remember", "optimize before measuring"],
+  ops: ["put the most senior person on-call forever", "fix the symptom without a postmortem", "deploy on Friday afternoon"],
+};
+
+const CASE_STUDIES: Record<ConceptCategory, string> = {
+  product: "Dropbox famously used a three-minute demo video as a smoke test before writing the full product, proving demand with a waitlist explosion.",
+  business: "Buffer published a transparent pricing and value page before building the full product, validating willingness to pay early.",
+  security: "The Equifax breach showed how missing a single patch and input validation can expose millions of records and destroy trust.",
+  scaling: "Knight Capital lost $440 million in 45 minutes because a manual deploy reused an old code path, showing the cost of missing rollback and testing.",
+  data: "The 2018 British Airways breach exposed poor data handling and retention practices, leading to massive GDPR fines.",
+  reliability: "Netflix's Chaos Monkey deliberately breaks production instances, turning incident response and observability into a practiced habit.",
+  architecture: "Twitter's move from a monolith to services was driven by real scaling pain, not fashion; premature microservices would have killed the product.",
+  engineering: "Healthcare.gov's launch showed that late integration testing and unclear ownership can turn a high-profile launch into a public failure.",
+  ops: "GitLab's accidental database deletion became a model incident response because they documented every step and shared the postmortem publicly.",
+};
+
+const RESOURCES: Record<ConceptCategory, string[]> = {
+  product: ["https://www.ycombinator.com/library", "https://www.kalzumeus.com/2012/05/31/validating-product-ideas-before-you-build/"],
+  business: ["https://www.kalzumeus.com/greatest-hits/", "https://www.venturehacks.com/"],
+  security: ["https://owasp.org/", "https://sre.google/sre-book/"],
+  scaling: ["https://sre.google/sre-book/", "https://www.nginx.com/blog/"],
+  data: ["https://use-the-index-luke.com/", "https://sre.google/sre-book/"],
+  reliability: ["https://sre.google/sre-book/", "https://www.honeycomb.io/blog/what-is-observability"],
+  architecture: ["https://martinfowler.com/", "https://sre.google/sre-book/"],
+  engineering: ["https://refactoring.guru/", "https://martinfowler.com/"],
+  ops: ["https://sre.google/sre-book/", "https://response.pagerduty.com/"],
+};
+
+function isGenericMisconception(text: string): boolean {
+  const generic = [
+    "that knowing the definition",
+    "is the same as having",
+    "will magically",
+    "just add",
+    "just use",
+    "only happens",
+    "is the same as doing",
+  ];
+  const lower = text.toLowerCase();
+  return generic.some((g) => lower.includes(g));
+}
+
 function autofillLesson(concept: string, category: ConceptCategory, lesson: Lesson): Lesson {
   const display = concept.replace(/-/g, " ");
   const exampleAnswer = lesson.example_answer || firstSentences(lesson.explanation);
-  const antiPatterns = lesson.anti_patterns ||
-    (lesson.common_misconception ? [lesson.common_misconception] : []);
+  const antiPatterns =
+    lesson.anti_patterns ||
+    (lesson.common_misconception && !isGenericMisconception(lesson.common_misconception)
+      ? [lesson.common_misconception]
+      : ANTI_PATTERNS[category] || []);
   const example = lesson.example || firstSentences(lesson.apply, 160);
   const caseStudy =
     lesson.case_study ||
+    CASE_STUDIES[category] ||
     `Many teams discover ${display} only after a painful outage or a missed deadline. Studying it early prevents the expensive fix later.`;
-  const resources = lesson.resources || [];
+  const resources = lesson.resources || RESOURCES[category] || [];
   const graph = splitByOrder(DEFAULT_RELATED[category] || [], concept);
   const prereqs = lesson.prereqs || graph.prereqs.slice(0, 3);
   const next = lesson.next || graph.next.slice(0, 4);
