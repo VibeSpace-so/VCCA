@@ -7,21 +7,38 @@ import {
   defaultMilestones,
   defaultRisks,
   getVccaDir,
+  loadKnowledge,
   loadMilestones,
+  loadProfile,
   loadProject,
   loadRisks,
   MILESTONES,
   type Milestone,
   type MilestonesState,
+  type Profile,
   type Project,
   type RiskLevel,
   type Risks,
   RISK_CATEGORIES,
   sanitizeOutput,
+  writeKnowledge,
   writeMilestones,
+  writeProfile,
   writeProject,
   writeRisks,
 } from "./state.js";
+import { catalogIndexLesson, getLesson, normalizeConcept } from "./concept-catalog.js";
+import {
+  assessConcept,
+  buildKnowledgeMap,
+  buildRoadmap,
+  buildTeachOutput,
+  milestoneReadiness,
+  createProfile,
+  type ExperienceLevel,
+  getEffectiveLevel,
+  updateConfidenceTendency,
+} from "./knowledge.js";
 
 export interface VccaTool {
   name: string;
@@ -93,16 +110,20 @@ const loadStateTool: VccaTool = {
     project: z.any().optional(),
     risks: z.any().optional(),
     milestones: z.any().optional(),
+    profile: z.any().optional(),
+    knowledge: z.any().optional(),
     highest_risk_category: z.string().optional(),
     highest_risk_score: z.enum(["Low", "Medium", "High", "Critical"]).optional(),
     journal_snippet: z.string().optional(),
     decisions_snippet: z.string().optional(),
   }),
   async execute({ project_path }) {
-    const [project, risks, milestones] = await Promise.all([
+    const [project, risks, milestones, profile, knowledge] = await Promise.all([
       loadProject(project_path),
       loadRisks(project_path),
       loadMilestones(project_path),
+      loadProfile(project_path).catch(() => null),
+      loadKnowledge(project_path).catch(() => null),
     ]);
 
     let highest = "" as keyof Risks | "";
@@ -126,10 +147,12 @@ const loadStateTool: VccaTool = {
     ]);
 
     return sanitizeOutput({
-      exists: !!(project || risks || milestones),
+      exists: !!(project || risks || milestones || profile || knowledge),
       project: project || undefined,
       risks: risks || undefined,
       milestones: milestones || undefined,
+      profile: profile || undefined,
+      knowledge: knowledge || undefined,
       highest_risk_category: highest || undefined,
       highest_risk_score: highest
         ? ((["Low", "Medium", "High", "Critical"][highestScore - 1]) as "Low" | "Medium" | "High" | "Critical")
@@ -147,7 +170,7 @@ const loadStateTool: VccaTool = {
 const updateStateTool: VccaTool = {
   name: "update_state",
   description:
-    "Create or update the persisted VCCA state for a project. Merge project and risk updates, advance milestones, and append journal or decision entries.",
+    "Create or update the persisted VCCA state for a project. Merge project and risk updates, advance milestones, append journal or decision entries, and update user profile/knowledge.",
   inputSchema: z.object({
     project_path: z.string().min(1).describe("Path to the project directory."),
     project: z.any().optional().describe("Partial project fields to merge into .vcca/project.yaml."),
@@ -158,6 +181,8 @@ const updateStateTool: VccaTool = {
         completed: z.array(z.string()).optional(),
       })
       .optional(),
+    profile: z.any().optional().describe("Partial profile fields to merge into .vcca/profile.yaml."),
+    knowledge: z.any().optional().describe("Partial knowledge map to merge into .vcca/knowledge.yaml."),
     journal_entry: z.string().optional().describe("Markdown text to append to .vcca/journal.md."),
     decision: z
       .object({
@@ -171,18 +196,24 @@ const updateStateTool: VccaTool = {
     project: z.any().optional(),
     risks: z.any().optional(),
     milestones: z.any().optional(),
+    profile: z.any().optional(),
+    knowledge: z.any().optional(),
     updated: z.boolean(),
   }),
-  async execute({ project_path, project, risks, milestones, journal_entry, decision }) {
-    const [existingProject, existingRisks, existingMilestones] = await Promise.all([
+  async execute({ project_path, project, risks, milestones, profile, knowledge, journal_entry, decision }) {
+    const [existingProject, existingRisks, existingMilestones, existingProfile, existingKnowledge] = await Promise.all([
       loadProject(project_path),
       loadRisks(project_path),
       loadMilestones(project_path),
+      loadProfile(project_path).catch(() => null),
+      loadKnowledge(project_path).catch(() => null),
     ]);
 
     const nextProject: Project = { ...(existingProject || {}), ...(project || {}) } as Project;
     const nextRisks: Risks = { ...(existingRisks || defaultRisks()), ...(risks || {}) } as Risks;
     const nextMilestones: MilestonesState = existingMilestones || defaultMilestones();
+    const nextProfile: Profile = { ...(existingProfile || {}), ...(profile || {}) } as Profile;
+    const nextKnowledge = { ...(existingKnowledge || {}), ...(knowledge || {}) };
 
     if (milestones) {
       if (milestones.current) {
@@ -206,11 +237,14 @@ const updateStateTool: VccaTool = {
       }
     }
 
-    await Promise.all([
+    const writes: Promise<unknown>[] = [
       writeProject(project_path, nextProject),
       writeRisks(project_path, nextRisks),
       writeMilestones(project_path, nextMilestones),
-    ]);
+    ];
+    if (Object.keys(nextProfile).length) writes.push(writeProfile(project_path, nextProfile));
+    if (Object.keys(nextKnowledge).length) writes.push(writeKnowledge(project_path, nextKnowledge));
+    await Promise.all(writes);
 
     if (journal_entry) await appendJournal(project_path, journal_entry);
     if (decision) await appendDecision(project_path, decision.request, decision.recommendation, decision.rationale);
@@ -219,6 +253,8 @@ const updateStateTool: VccaTool = {
       project: nextProject,
       risks: nextRisks,
       milestones: nextMilestones,
+      profile: Object.keys(nextProfile).length ? nextProfile : undefined,
+      knowledge: Object.keys(nextKnowledge).length ? nextKnowledge : undefined,
       updated: true,
     });
   },
@@ -439,9 +475,13 @@ const trackMilestoneTool: VccaTool = {
     previous: z.string().optional(),
     warning: z.string().optional(),
     valid_milestones: z.array(z.string()).optional(),
+    readiness: z.array(z.any()).optional(),
   }),
   async execute({ project_path, current, mark_complete }) {
-    const existing = (await loadMilestones(project_path)) || defaultMilestones();
+    const [existing, knowledge] = await Promise.all([
+      (async () => (await loadMilestones(project_path)) || defaultMilestones())(),
+      loadKnowledge(project_path).catch(() => ({} as any)),
+    ]);
     const previous = existing.current;
     const warnings: string[] = [];
 
@@ -471,6 +511,11 @@ const trackMilestoneTool: VccaTool = {
       if (skipped.length) warnings.push(`Skipped unrecognized milestone(s): ${skipped.join(", ")}.`);
     }
 
+    const readiness = milestoneReadiness(knowledge, existing.current);
+    if (readiness.length) {
+      warnings.push(`${readiness.length} critical knowledge concepts are not verified for ${existing.current}.`);
+    }
+
     await writeMilestones(project_path, existing);
 
     return sanitizeOutput({
@@ -479,6 +524,7 @@ const trackMilestoneTool: VccaTool = {
       previous: previous !== existing.current ? previous : undefined,
       warning: warnings.length ? warnings.join(" ") : undefined,
       valid_milestones: warnings.length ? [...MILESTONES] : undefined,
+      readiness,
     });
   },
 };
@@ -751,7 +797,7 @@ const RISK_ACTION: Record<keyof Risks, string> = {
 const weeklyReviewTool: VccaTool = {
   name: "weekly_review",
   description:
-    "Generate a weekly review for the project. Loads state, repository signals, and recent journal/decision logs.",
+    "Generate a weekly review for the project. Loads state, repository signals, knowledge map, and recent journal/decision logs.",
   inputSchema: z.object({
     project_path: z.string().min(1).describe("Path to the project directory."),
   }),
@@ -761,6 +807,11 @@ const weeklyReviewTool: VccaTool = {
     current_risks: z.array(z.string()),
     suggested_priorities: z.array(z.string()),
     things_not_to_build: z.array(z.string()),
+    knowledge_gaps: z.array(z.any()).optional(),
+    dangerous_overconfidence: z.array(z.any()).optional(),
+    due_for_review: z.array(z.any()).optional(),
+    next_recommended_concept: z.any().optional(),
+    confidence_tendency: z.string().optional(),
     highest_leverage_next_action: z.string(),
     summary: z.string(),
   }),
@@ -849,14 +900,32 @@ const weeklyReviewTool: VccaTool = {
 
     const highest = suggested[0];
 
+    const [knowledgeMap, profile] = await Promise.all([
+      buildKnowledgeMap(project_path, repo).catch(() => null),
+      loadProfile(project_path).catch(() => null),
+    ]);
+
+    const knowledgeGaps = knowledgeMap?.study_queue
+      ?.filter((s) => s.status === "unknown" || s.status === "shaky")
+      .map((s) => ({ concept: s.concept, status: s.status, why: s.why }));
+    const overconfidence = knowledgeMap?.study_queue
+      ?.filter((s) => s.status === "overconfident")
+      .map((s) => ({ concept: s.concept, why: s.why }));
+
     return sanitizeOutput({
       completed_work: completedWork,
       current_milestone: m.current,
       current_risks: currentRisks,
       suggested_priorities: suggested,
       things_not_to_build: notToBuild,
+      knowledge_gaps: knowledgeGaps,
+      dangerous_overconfidence: overconfidence,
+      due_for_review: knowledgeMap?.due_for_review?.slice(0, 5),
+      next_recommended_concept: knowledgeMap?.next_recommended_concept,
+      confidence_tendency: profile?.confidence_tendency,
       highest_leverage_next_action: highest,
-      summary: `Current milestone: ${m.current}. Top risk: ${currentRisks[0] || "unknown"}. Highest-leverage next action: ${highest}.`,
+      summary: `Current milestone: ${m.current}. Top risk: ${currentRisks[0] || "unknown"}. Highest-leverage next action: ${highest}.` +
+        (knowledgeMap ? ` Knowledge: ${knowledgeMap.verified.length} verified, ${knowledgeMap.overconfident.length} overconfident, ${knowledgeMap.unknown_unknowns.length} unknown. Next concept: ${knowledgeMap.next_recommended_concept?.concept || "none"}. Due for review: ${knowledgeMap.due_for_review.length}.` : ""),
     });
   },
 };
@@ -865,66 +934,385 @@ const weeklyReviewTool: VccaTool = {
 // teach_concept
 // =============================================================================
 
-const LESSONS: Record<string, { question: string; explanation: string; apply: string }> = {
-  idempotency: {
-    question: "What happens if Stripe sends the same webhook twice?",
-    explanation:
-      "Idempotency means the same operation can run multiple times without changing the result. Use an idempotency key from the provider and record processed keys so the second request is a no-op.",
-    apply: "Find every webhook handler and add an idempotency key check before changing state.",
-  },
-  "rate-limiting": {
-    question: "What happens if a user tries a thousand passwords?",
-    explanation:
-      "Rate limiting caps how often a caller can use an endpoint. It protects you from brute force, scraping, and accidental abuse. Apply it to logins, public APIs, and expensive endpoints.",
-    apply: "Add rate limiting to authentication and any public API that triggers writes.",
-  },
-  "health-checks": {
-    question: "How does a load balancer know your app is alive?",
-    explanation:
-      "A health endpoint tells the load balancer or orchestrator whether the app can serve traffic. It should test the app and its critical dependencies, not just return 200.",
-    apply: "Create a /health endpoint that checks the database or cache, and wire it into your deploy target.",
-  },
-  "feature-flags": {
-    question: "What if a new feature breaks in production?",
-    explanation:
-      "Feature flags let you ship code without exposing it, and turn it off instantly if something breaks. They separate deploy from release.",
-    apply: "Wrap the next risky feature in a flag so you can disable it without redeploying.",
-  },
-  rollback: {
-    question: "What if the last deploy corrupts data?",
-    explanation:
-      "A rollback strategy lets you revert to the last known good version quickly. It pairs with backward-compatible migrations and feature flags.",
-    apply: "Make the last deploy one command away from a rollback, and test it before you need it.",
-  },
-  validation: {
-    question: "How do you know people want this before you build it?",
-    explanation:
-      "Customer validation means testing demand with smoke tests, waitlists, or paid pre-orders before writing production code. It reduces the risk of building something no one buys.",
-    apply: "Create the smallest test—landing page, waitlist, or pre-order—that validates the riskiest assumption.",
-  },
-};
-
 const teachConceptTool: VccaTool = {
   name: "teach_concept",
   description:
-    "Prepare a two-minute lesson for a concept. Returns a question, a short explanation, and an immediate application step.",
+    "Prepare a Socratic, confidence-calibrated lesson for a concept. Supports roadmap-style exploration: use 'mode' to go wide (adjacent topics), deep (subtopics), or balanced, and 'depth' for shallow/normal/deep content. Works with or without a project_path.",
   inputSchema: z.object({
-    concept: z.string().min(1).describe("Concept to teach, e.g. idempotency, rate-limiting, health-checks."),
+    concept: z
+      .string()
+      .optional()
+      .describe(
+        "Concept to teach. Use 'index' or leave empty to list all concepts. Examples: idempotency, rate-limiting, horizontal-scaling, database-sharding, incident-response, unit-economics, gdpr, or any term."
+      ),
+    project_path: z.string().optional().describe("Path to project directory. Used to load the user's profile and knowledge state."),
     apply_to: z.string().optional().describe("Optional project context to tailor the application step."),
+    experience_level: z.enum(["newbie", "some_code", "shipped", "senior"]).optional().describe("Override the user's stored experience level."),
+    mode: z.enum(["wide", "deep", "balanced"]).optional().describe("Roadmap mode: wide (adjacent topics), deep (subtopics), balanced (mix)."),
+    depth: z.enum(["shallow", "normal", "deep"]).optional().describe("Content depth: shallow (quick summary), normal, deep (expert prompts + subtopics)."),
+    milestone: z.string().optional().describe("Override the milestone (e.g., 'Idea', 'MVP', 'Growth') for roadmap relevance."),
   }),
   outputSchema: z.object({
-    question: z.string(),
-    explanation: z.string(),
-    apply: z.string(),
+    concept: z.string().optional(),
+    level: z.string().optional(),
+    mode: z.string().optional(),
+    depth: z.string().optional(),
+    question: z.string().optional(),
+    prompts_before_answer: z.array(z.string()).optional(),
+    explanation: z.string().optional(),
+    why_it_matters: z.string().optional(),
+    common_misconception: z.string().optional(),
+    follow_up_questions: z.array(z.string()).optional(),
+    apply: z.string().optional(),
+    related_concepts: z.array(z.string()).optional(),
+    catalog: z.array(z.string()).optional(),
+    self_check_question: z.string().optional(),
+    rubric: z.array(z.string()).optional(),
+    knowledge_status: z.string().optional(),
+    confidence_gap: z.string().optional(),
+    concept_importance: z.string().optional(),
+    example_answer: z.string().optional(),
+    anti_patterns: z.array(z.string()).optional(),
+    example: z.string().optional(),
+    case_study: z.string().optional(),
+    resources: z.array(z.string()).optional(),
+    prereqs: z.array(z.string()).optional(),
+    next: z.array(z.string()).optional(),
+    prerequisites: z.array(z.string()).optional(),
+    subtopics: z.array(z.string()).optional(),
+    wider_concepts: z.array(z.string()).optional(),
+    study_path: z.array(z.string()).optional(),
+    quick_summary: z.string().optional(),
+    deep_dive: z.any().optional(),
   }),
-  async execute({ concept, apply_to }) {
-    const lesson = LESSONS[concept.toLowerCase()] || {
-      question: `What is the most important thing to understand about ${concept}?`,
-      explanation: `${concept} is a tool or principle. The key is to use it only when it reduces a real risk, not because it is interesting.`,
-      apply: `Find one place in your project where ignoring ${concept} would cause a failure, and fix that first.`,
+  async execute(input: any) {
+    const { concept, project_path, apply_to, experience_level, mode, depth, milestone } = input as {
+      concept?: string;
+      project_path?: string;
+      apply_to?: string;
+      experience_level?: ExperienceLevel;
+      mode?: "wide" | "deep" | "balanced";
+      depth?: "shallow" | "normal" | "deep";
+      milestone?: string;
     };
-    const apply = apply_to ? `${lesson.apply} In your case: ${apply_to}.` : lesson.apply;
-    return sanitizeOutput({ question: lesson.question, explanation: lesson.explanation, apply });
+    // If the caller passes an explicit milestone, we write a temporary project hint to ensure relevance even without a repo.
+    const effectiveMilestone = milestone ? (MILESTONES.includes(milestone as Milestone) ? (milestone as Milestone) : "Idea") : undefined;
+    let pathToUse = project_path;
+    if (milestone && !project_path) {
+      const tmpDir = `${process.cwd()}/.vcca-roadmap-tmp`;
+      await writeProject(tmpDir, { stage: effectiveMilestone } as Project);
+      pathToUse = tmpDir;
+    }
+    const output = await buildTeachOutput(concept || "index", pathToUse, apply_to, experience_level, mode, depth);
+    if (milestone && !project_path) {
+      // Clean up the temporary state.
+      import("node:fs/promises").then((fs) => fs.rm(pathToUse!, { recursive: true, force: true }).catch(() => {}));
+    }
+    return sanitizeOutput(output);
+  },
+};
+
+// =============================================================================
+// onboard_user
+// =============================================================================
+
+const onboardUserTool: VccaTool = {
+  name: "onboard_user",
+  description:
+    "Create or update the user's mental profile for the project. Stores experience level, background, known concepts, and learning style in .vcca/profile.yaml and seeds .vcca/knowledge.yaml.",
+  inputSchema: z.object({
+    project_path: z.string().min(1).describe("Path to the project directory."),
+    experience_level: z.enum(["newbie", "some_code", "shipped", "senior"]).describe("User's general experience level."),
+    backgrounds: z.array(z.enum(["frontend", "backend", "fullstack", "product", "design", "business", "ops", "data"])).optional(),
+    known_concepts: z.array(z.string()).optional().describe("Concepts the user already claims to know well."),
+    learning_style: z.enum(["structured", "exploratory", "project_based"]).optional(),
+    mental_note: z.string().optional().describe("Free-form note about the user's context."),
+  }),
+  outputSchema: z.object({
+    profile: z.any(),
+    knowledge: z.any(),
+    calibration_quiz: z.array(z.string()).optional(),
+    updated: z.boolean(),
+  }),
+  async execute({ project_path, experience_level, backgrounds, known_concepts, learning_style, mental_note }) {
+    const existing = await loadProfile(project_path).catch(() => null);
+    const profile: Profile = {
+      ...(existing || {}),
+      experience_level,
+      backgrounds: backgrounds as Profile["backgrounds"],
+      known_concepts: known_concepts ? known_concepts.map(normalizeConcept) : existing?.known_concepts,
+      learning_style,
+      mental_note,
+    };
+    const { profile: createdProfile, knowledge } = await createProfile(project_path, profile);
+    return sanitizeOutput({ profile: createdProfile, knowledge, calibration_quiz: createdProfile.calibration_quiz, updated: true });
+  },
+};
+
+// =============================================================================
+// assess_concept
+// =============================================================================
+
+const assessConceptTool: VccaTool = {
+  name: "assess_concept",
+  description:
+    "Record a user's self-assessment and answer for a concept, compare it to repo/profile evidence, and return a calibrated status (overconfident, shaky, verified, etc). If the answer is nuanced, set auto_grade=false and provide an actual_rating after reviewing the answer. Writes the result to .vcca/knowledge.yaml.",
+  inputSchema: z.object({
+    project_path: z.string().min(1).describe("Path to the project directory."),
+    concept: z.string().min(1).describe("Concept being assessed."),
+    self_rating: z.number().min(1).max(5).describe("How confident the user feels, 1-5."),
+    answer: z.string().optional().describe("The user's answer to the self-check question."),
+    actual_rating: z.number().min(1).max(5).optional().describe("Optional agent-graded actual understanding (1-5). Use when the answer is nuanced."),
+    auto_grade: z.boolean().optional().describe("If true (default), the tool will auto-score the answer. If false, it records the answer and returns a suggested rating for the agent to confirm."),
+    evidence: z.string().optional().describe("Optional free-form evidence the user provided."),
+  }),
+  outputSchema: z.object({
+    concept: z.string(),
+    status: z.string(),
+    self_rating: z.number(),
+    actual_rating: z.number(),
+    suggested_actual_rating: z.number().optional(),
+    needs_review: z.boolean().optional(),
+    gap: z.string(),
+    recommended_action: z.string(),
+    evidence: z.array(z.string()).optional(),
+    answer: z.string().optional(),
+  }),
+  async execute({ project_path, concept, self_rating, answer, actual_rating, auto_grade, evidence }) {
+    const repo = await analyzeRepo(project_path).catch(() => undefined);
+    const result = await assessConcept(project_path, concept, self_rating, answer, repo, actual_rating, auto_grade ?? true);
+    const knowledge = (await loadKnowledge(project_path).catch(() => ({}))) || {};
+    const tendency = updateConfidenceTendency(knowledge);
+    const existingProfile = await loadProfile(project_path).catch(() => null);
+    if (existingProfile) {
+      await writeProfile(project_path, { ...existingProfile, confidence_tendency: tendency });
+    }
+    return sanitizeOutput({
+      concept: normalizeConcept(concept),
+      ...result,
+      evidence: result.evidence,
+      answer,
+    });
+  },
+};
+
+// =============================================================================
+// knowledge_map
+// =============================================================================
+
+const knowledgeMapTool: VccaTool = {
+  name: "knowledge_map",
+  description:
+    "Return a dashboard of what the user thinks they know vs. what the repo and past assessments show. Highlights unknown unknowns, dangerous overconfidence, and a study queue.",
+  inputSchema: z.object({
+    project_path: z.string().min(1).describe("Path to the project directory."),
+  }),
+  outputSchema: z.object({
+    experience_level: z.string().optional(),
+    confidence_tendency: z.string().optional(),
+    current_milestone: z.string().optional(),
+    next_recommended_concept: z.any().optional(),
+    concepts: z.array(z.any()).optional(),
+    unknown_unknowns: z.array(z.string()).optional(),
+    overconfident: z.array(z.string()).optional(),
+    shaky: z.array(z.string()).optional(),
+    verified: z.array(z.string()).optional(),
+    aware: z.array(z.string()).optional(),
+    due_for_review: z.array(z.any()).optional(),
+    study_queue: z.array(z.any()).optional(),
+    summary: z.string(),
+  }),
+  async execute({ project_path }) {
+    const repo = await analyzeRepo(project_path).catch(() => undefined);
+    const map = await buildKnowledgeMap(project_path, repo);
+    return sanitizeOutput(map);
+  },
+};
+
+// =============================================================================
+// roadmap
+// =============================================================================
+
+const roadmapTool: VccaTool = {
+  name: "roadmap",
+  description:
+    "Generate a roadmap.sh-style learning path. Returns stages of concepts to cover either wide (across categories), deep (one category), or balanced. Works with or without a project repo.",
+  inputSchema: z.object({
+    project_path: z.string().optional().describe("Path to project directory. If omitted, uses milestone/experience_level inputs. If provided, the roadmap is also saved to .vcca/roadmap.md."),
+    milestone: z.string().optional().describe("Milestone to target, e.g., 'Idea', 'MVP', 'First Paying User', 'Growth'."),
+    experience_level: z.enum(["newbie", "some_code", "shipped", "senior"]).optional().describe("User's experience level."),
+    mode: z.enum(["wide", "deep", "balanced"]).optional().describe("Wide (breadth), deep (one track), or balanced (mixed)."),
+    focus_area: z.enum(["product", "business", "security", "scaling", "data", "reliability", "architecture", "engineering", "ops"]).optional().describe("For deep mode, which category to drill into."),
+    max_concepts: z.number().optional().describe("Cap the total number of concepts in the roadmap."),
+    hide_known: z.boolean().optional().describe("If true, filter out concepts already marked verified or aware."),
+    resume_from: z.string().optional().describe("Concept to pin to the top of the roadmap as the user's current study point."),
+  }),
+  outputSchema: z.object({
+    mode: z.string(),
+    milestone: z.string(),
+    experience_level: z.string(),
+    focus_area: z.string().optional(),
+    stages: z.array(z.any()),
+    summary: z.string(),
+    export_path: z.string().optional(),
+  }),
+  async execute({ project_path, milestone, experience_level, mode, focus_area, max_concepts, hide_known, resume_from }) {
+    const m = (milestone && MILESTONES.includes(milestone as Milestone) ? (milestone as Milestone) : undefined);
+    let targetMilestone: Milestone = m || "Idea";
+    let effectiveLevel: ExperienceLevel = experience_level || "newbie";
+    let knowledge = null;
+
+    if (project_path) {
+      const [profile, km, ms] = await Promise.all([
+        loadProfile(project_path).catch(() => null),
+        loadKnowledge(project_path).catch(() => null),
+        loadMilestones(project_path).catch(() => null),
+      ]);
+      effectiveLevel = getEffectiveLevel(experience_level, profile || undefined);
+      targetMilestone = m || ms?.current || (profile as any)?.stage || "Idea";
+      knowledge = km;
+    }
+
+    const output = buildRoadmap(targetMilestone, (mode as any) || "balanced", effectiveLevel, focus_area as any, knowledge || undefined, max_concepts, hide_known, resume_from);
+
+    if (project_path) {
+      const markdown = `# VCCA Learning Roadmap: ${output.milestone}\n\n` +
+        `${output.summary}\n\n` +
+        output.stages.map((s) => `## ${s.name}\n\n` + s.concepts.map((c) => `- **${c.concept}** (importance ${c.importance}) — ${c.why}`).join("\n")).join("\n\n");
+      await fs.writeFile(`${project_path}/.vcca/roadmap.md`, markdown).catch(() => null);
+      return sanitizeOutput({ ...output, export_path: `${project_path}/.vcca/roadmap.md` });
+    }
+
+    return sanitizeOutput(output);
+  },
+};
+
+// =============================================================================
+// milestone_checklist
+// =============================================================================
+
+const MILESTONE_CHECKLISTS: Record<Milestone, string[]> = {
+  Idea: [
+    "Write a one-sentence description of the problem you want to solve.",
+    "Name the specific person or group who has this problem.",
+    "Describe how they solve it today, even badly.",
+    "List the riskiest assumptions you are making.",
+    "Set a single current goal for the next 2 weeks.",
+  ],
+  "Customer Interviews": [
+    "Find 5 people who match your target customer.",
+    "Prepare 5 open-ended questions about their problem and current workaround.",
+    "Run the interviews and take notes on jobs, pains, and gains.",
+    "Synthesize patterns across interviews, not just one quote.",
+    "Validate or invalidate each riskiest assumption.",
+    "Decide whether to proceed, pivot, or stop.",
+  ],
+  "Landing Page": [
+    "Write a clear value proposition: problem, solution, and outcome.",
+    "Design a single page with a headline, proof, and one call to action.",
+    "Add a signup, waitlist, or pre-order form.",
+    "Set up basic analytics to track visits and conversions.",
+    "Share the page with 50 potential customers.",
+  ],
+  "First Email List": [
+    "Launch the landing page with a channel your target customer uses.",
+    "Collect the first 50 emails or signups.",
+    "Send a welcome email that reinforces the problem and expected solution.",
+    "Segment signups by source or motivation.",
+    "Identify 5 people willing to do a deeper interview.",
+  ],
+  MVP: [
+    "Define the smallest end-to-end flow that solves one validated problem.",
+    "Choose the simplest stack that supports the core flow.",
+    "Build the happy path first; defer edge cases.",
+    "Add one path for each: create, read, update, delete if needed.",
+    "Run the flow with 3 target users before declaring it done.",
+    "Collect and prioritize the top 3 pieces of feedback.",
+  ],
+  "First Users": [
+    "Invite 5 target users to try the MVP.",
+    "Watch them complete the core flow without coaching.",
+    "Measure activation: did they experience the core value?",
+    "Fix the top 3 blockers that stop users from activating.",
+    "Set up a feedback loop: email, in-app, or interview.",
+  ],
+  "First Paying User": [
+    "Identify 3 users who get the most value from the product.",
+    "Ask them to pay before the feature is fully built.",
+    "Set up payment processing and invoicing.",
+    "Deliver the promised value and collect a testimonial.",
+    "Document why they paid and what almost stopped them.",
+  ],
+  Retention: [
+    "Define a cohort retention chart and pick a time period (e.g., 7-day).",
+    "Measure where users drop off in their first week.",
+    "Interview 5 users who stuck around and 5 who left.",
+    "Fix the biggest drop-off point with the smallest change.",
+    "Re-measure retention to confirm the improvement.",
+  ],
+  "PMF Signals": [
+    "Track organic referrals and word-of-mouth growth.",
+    "Measure retention, usage frequency, and top user actions.",
+    "Identify the segment of users that cannot live without the product.",
+    "Calculate unit economics: CAC, LTV, payback period.",
+    "Double down on the channel and customer that is working.",
+  ],
+  Growth: [
+    "Find the one distribution channel that is already working.",
+    "Build a repeatable process for acquiring users through that channel.",
+    "Add growth loops: referrals, virality, content, or integrations.",
+    "Hire or automate the operational bottlenecks.",
+    "Set a monthly growth target and review it weekly.",
+  ],
+};
+
+const VALID_MILESTONES_LIST_2 = MILESTONES.join(", ");
+
+const milestoneChecklistTool: VccaTool = {
+  name: "milestone_checklist",
+  description:
+    "Get a concrete checklist for a given milestone. If project_path is provided, uses the current milestone; otherwise uses the milestone argument.",
+  inputSchema: z.object({
+    milestone: z
+      .string()
+      .optional()
+      .describe(`Milestone to get a checklist for. Valid values: ${VALID_MILESTONES_LIST_2}.`),
+    project_path: z
+      .string()
+      .optional()
+      .describe("Path to the project directory. Optional; if provided the current milestone is used."),
+  }),
+  outputSchema: z.object({
+    milestone: z.string(),
+    checklist: z.array(z.string()),
+    focus: z.array(z.string()),
+    summary: z.string(),
+  }),
+  async execute({ milestone, project_path }) {
+    let current: Milestone | undefined = milestone as Milestone | undefined;
+
+    if (project_path) {
+      try {
+        const ms = await loadMilestones(project_path);
+        if (ms?.current) current = ms.current;
+      } catch {
+        // ignore
+      }
+    }
+
+    if (!current || !MILESTONES.includes(current as Milestone)) {
+      current = "Idea";
+    }
+
+    const checklist = MILESTONE_CHECKLISTS[current] || [];
+    const focus = checklist.slice(0, 3);
+
+    return sanitizeOutput({
+      milestone: current,
+      checklist,
+      focus,
+      summary: `Milestone: ${current}. Top 3 focus: ${focus.join("; ")}.`,
+    });
   },
 };
 
@@ -960,14 +1348,14 @@ const repoReviewTool: VccaTool = {
     if (allDeps.length === 0) architecture.push("No manifest dependencies detected; verify project setup.");
 
     const security: string[] = [...summary.security_notes];
-    if (!summary.has_auth) security.push("No auth library detected. Add auth before collecting sensitive data.");
-    if (!summary.has_rate_limiting) security.push("No rate limiting detected. Add it to public endpoints.");
-    if (!summary.has_error_reporting) security.push("No error reporting service detected. Use Sentry or similar to catch issues.");
+    if (!summary.has_error_reporting) {
+      security.push("No error reporting service detected. Use Sentry or similar to catch issues before users do.");
+    }
 
     const deployment: string[] = [...summary.deployment_notes];
-    if (!summary.has_ci_cd) deployment.push("No CI/CD config. Add GitHub Actions, GitLab CI, or similar.");
-    if (!summary.has_docker) deployment.push("No Docker or docker-compose. Consider containerization for parity.");
-    if (!summary.has_migrations) deployment.push("No database migration directory. Add a migration strategy.");
+    if (!summary.has_health_endpoint && summary.has_ci_cd) {
+      deployment.push("CI/CD exists but no health endpoint detected. Add /health before going live.");
+    }
 
     const tests: string[] = [];
     if (!summary.has_tests) tests.push("No tests or test directories found. Add unit or e2e tests for the critical path.");
@@ -976,7 +1364,7 @@ const repoReviewTool: VccaTool = {
     }
 
     const debt: string[] = [];
-    if (summary.todos.length > 5) debt.push(`${summary.todos.length} open TODOs/FIXMEs. Review and schedule or close them.`);
+    if (summary.todos.length > 0) debt.push(`${summary.todos.length} open TODOs/FIXMEs. Review, schedule, or close them.`);
 
     const docs: string[] = [];
     if (!summary.has_readme) docs.push("Missing README. Add what the project does and how to run it.");
@@ -990,6 +1378,9 @@ const repoReviewTool: VccaTool = {
     }
     if (allDeps.some((d) => /postgres|mysql|mongo/i.test(d))) {
       scaling.push("Database in use. Plan connection pooling, indexes, and read replicas before scaling.");
+    }
+    if (summary.dependencies.includes("sqlite3") && !summary.has_migrations) {
+      scaling.push("SQLite is included but there is no migration strategy. Plan how schema changes will be applied.");
     }
 
     const top = [
@@ -1029,6 +1420,11 @@ export const vccaTools = {
   simulate_incident: simulateIncidentTool,
   weekly_review: weeklyReviewTool,
   teach_concept: teachConceptTool,
+  onboard_user: onboardUserTool,
+  assess_concept: assessConceptTool,
+  knowledge_map: knowledgeMapTool,
+  roadmap: roadmapTool,
+  milestone_checklist: milestoneChecklistTool,
   repo_review: repoReviewTool,
 } as const;
 

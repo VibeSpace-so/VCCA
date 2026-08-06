@@ -303,14 +303,18 @@ export async function analyzeRepo(projectPath: string): Promise<RepoSummary> {
 
   const allTextFiles = await (async () => {
     const files: string[] = [];
+    const excluded = new Set(["node_modules", ".git", ".output", ".eve", ".vcca", "vendor", "__pycache__", "dist", "build"]);
     try {
       const entries = await fs.readdir(p, { recursive: true });
       for (const e of entries) {
-        if (typeof e === "string") {
-          files.push(e);
-        } else {
-          files.push(path.relative(p, (e as any).parentPath ? path.join((e as any).parentPath, (e as any).name) : (e as any).name));
-        }
+        const rel =
+          typeof e === "string"
+            ? e
+            : path.relative(p, (e as any).parentPath ? path.join((e as any).parentPath, (e as any).name) : (e as any).name);
+        const parts = rel.split(/[\\/]/);
+        if (parts.some((part) => excluded.has(part))) continue;
+        if (rel.endsWith(".map") || rel.endsWith(".min.js")) continue;
+        files.push(rel);
       }
     } catch {
       // ignore
@@ -342,7 +346,11 @@ export async function analyzeRepo(projectPath: string): Promise<RepoSummary> {
   const hasHealthEndpoint = (await grepText(p, ["/health", "healthcheck", "health check"], 3)).length > 0;
 
   const testFiles = await walkForFiles(p, [".test.", ".spec.", "test_", "_test.", "conftest", "pytest"], 10);
-  const hasTests = testFiles.length > 0 || top.some((n) => /test/i.test(n));
+  const testRunnerDeps = ["jest", "vitest", "mocha", "ava", "tap", "karma", "jasmine", "cypress", "playwright", "pytest", "rspec"];
+  const hasTests =
+    testFiles.length > 0 ||
+    top.some((n) => /test/i.test(n)) ||
+    allDeps.some((d) => testRunnerDeps.some((r) => d.toLowerCase().includes(r.toLowerCase())));
 
   const architectureNotes: string[] = [];
   if (top.includes("src")) architectureNotes.push("Source is organized under src/.");
@@ -362,7 +370,8 @@ export async function analyzeRepo(projectPath: string): Promise<RepoSummary> {
   if (!hasAuth) securityNotes.push("No auth-related dependency detected; verify if the app needs authentication.");
   if (!hasRateLimit) securityNotes.push("No rate-limiting dependency detected.");
   if (top.some((n) => n === ".env")) securityNotes.push(".env file exists in repo root; ensure it is not committed.");
-  if (allTextFiles.some((f) => /secret|password|api_key|apikey/i.test(f))) {
+  const secretMatches = await grepText(p, ["secret", "password", "api_key", "apikey"], 1);
+  if (secretMatches.length > 0) {
     securityNotes.push("Files mention secrets/passwords; audit for hardcoded credentials.");
   }
   if (!hasPrivacy) securityNotes.push("No privacy policy file found.");
