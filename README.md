@@ -4,6 +4,15 @@ VCCA is an AI execution companion for software founders and vibe coders.
 
 It guides you from idea validation to production deployment by combining the perspectives of a technical cofounder, product manager, security reviewer, DevOps engineer, and startup advisor into a single conversation.
 
+## What's new in v0.2.0
+
+- **Socratic tutor with confidence calibration** — `teach_concept`, `assess_concept`, `knowledge_map`, `roadmap`, and `onboard_user`.
+- **Repo-aware knowledge** — `knowledge_map` auto-verifies concepts from repository signals.
+- **Milestone readiness gating** — `track_milestone` can block advancement until critical concepts are verified.
+- **Weekly review** with `due_for_review`, `next_recommended_concept`, and `dangerous_overconfidence`.
+- **Roadmap personalization** — hide known concepts, resume from a specific concept, and cap total output.
+- **CI** — GitHub Actions type-check, test, and build.
+
 ## Run
 
 ```bash
