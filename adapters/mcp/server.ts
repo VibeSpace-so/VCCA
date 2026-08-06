@@ -5,7 +5,7 @@ import { z } from "zod";
 import { vccaTools } from "../../agent/lib/tool-definitions.js";
 
 const server = new Server(
-  { name: "vcca", version: "0.2.0" },
+  { name: "vcca", version: "0.2.1" },
   { capabilities: { tools: {} } }
 );
 

@@ -1,6 +1,6 @@
 {
   "name": "vcca",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Vibe Coding Compass Agent — an AI execution companion for software founders and vibe coders.",
   "type": "module",
   "engines": {

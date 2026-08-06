@@ -13,6 +13,10 @@ It guides you from idea validation to production deployment by combining the per
 - **Roadmap personalization** — hide known concepts, resume from a specific concept, and cap total output.
 - **CI** — GitHub Actions type-check, test, and build.
 
+## What's new in v0.2.1
+
+- **LLM-graded assessments by default** — `assess_concept` now returns a `grading_prompt` and asks the host LLM to rate the answer. Set `auto_grade: true` to use the keyword heuristic for simple answers.
+
 ## Run
 
 ```bash
