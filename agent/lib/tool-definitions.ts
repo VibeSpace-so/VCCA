@@ -7,21 +7,37 @@ import {
   defaultMilestones,
   defaultRisks,
   getVccaDir,
+  loadKnowledge,
   loadMilestones,
+  loadProfile,
   loadProject,
   loadRisks,
   MILESTONES,
   type Milestone,
   type MilestonesState,
+  type Profile,
   type Project,
   type RiskLevel,
   type Risks,
   RISK_CATEGORIES,
   sanitizeOutput,
+  writeKnowledge,
   writeMilestones,
+  writeProfile,
   writeProject,
   writeRisks,
 } from "./state.js";
+import { catalogIndexLesson, getLesson, normalizeConcept } from "./concept-catalog.js";
+import {
+  assessConcept,
+  buildKnowledgeMap,
+  buildRoadmap,
+  buildTeachOutput,
+  createProfile,
+  type ExperienceLevel,
+  getEffectiveLevel,
+  updateConfidenceTendency,
+} from "./knowledge.js";
 
 export interface VccaTool {
   name: string;
@@ -93,16 +109,20 @@ const loadStateTool: VccaTool = {
     project: z.any().optional(),
     risks: z.any().optional(),
     milestones: z.any().optional(),
+    profile: z.any().optional(),
+    knowledge: z.any().optional(),
     highest_risk_category: z.string().optional(),
     highest_risk_score: z.enum(["Low", "Medium", "High", "Critical"]).optional(),
     journal_snippet: z.string().optional(),
     decisions_snippet: z.string().optional(),
   }),
   async execute({ project_path }) {
-    const [project, risks, milestones] = await Promise.all([
+    const [project, risks, milestones, profile, knowledge] = await Promise.all([
       loadProject(project_path),
       loadRisks(project_path),
       loadMilestones(project_path),
+      loadProfile(project_path).catch(() => null),
+      loadKnowledge(project_path).catch(() => null),
     ]);
 
     let highest = "" as keyof Risks | "";
@@ -126,10 +146,12 @@ const loadStateTool: VccaTool = {
     ]);
 
     return sanitizeOutput({
-      exists: !!(project || risks || milestones),
+      exists: !!(project || risks || milestones || profile || knowledge),
       project: project || undefined,
       risks: risks || undefined,
       milestones: milestones || undefined,
+      profile: profile || undefined,
+      knowledge: knowledge || undefined,
       highest_risk_category: highest || undefined,
       highest_risk_score: highest
         ? ((["Low", "Medium", "High", "Critical"][highestScore - 1]) as "Low" | "Medium" | "High" | "Critical")
@@ -147,7 +169,7 @@ const loadStateTool: VccaTool = {
 const updateStateTool: VccaTool = {
   name: "update_state",
   description:
-    "Create or update the persisted VCCA state for a project. Merge project and risk updates, advance milestones, and append journal or decision entries.",
+    "Create or update the persisted VCCA state for a project. Merge project and risk updates, advance milestones, append journal or decision entries, and update user profile/knowledge.",
   inputSchema: z.object({
     project_path: z.string().min(1).describe("Path to the project directory."),
     project: z.any().optional().describe("Partial project fields to merge into .vcca/project.yaml."),
@@ -158,6 +180,8 @@ const updateStateTool: VccaTool = {
         completed: z.array(z.string()).optional(),
       })
       .optional(),
+    profile: z.any().optional().describe("Partial profile fields to merge into .vcca/profile.yaml."),
+    knowledge: z.any().optional().describe("Partial knowledge map to merge into .vcca/knowledge.yaml."),
     journal_entry: z.string().optional().describe("Markdown text to append to .vcca/journal.md."),
     decision: z
       .object({
@@ -171,18 +195,24 @@ const updateStateTool: VccaTool = {
     project: z.any().optional(),
     risks: z.any().optional(),
     milestones: z.any().optional(),
+    profile: z.any().optional(),
+    knowledge: z.any().optional(),
     updated: z.boolean(),
   }),
-  async execute({ project_path, project, risks, milestones, journal_entry, decision }) {
-    const [existingProject, existingRisks, existingMilestones] = await Promise.all([
+  async execute({ project_path, project, risks, milestones, profile, knowledge, journal_entry, decision }) {
+    const [existingProject, existingRisks, existingMilestones, existingProfile, existingKnowledge] = await Promise.all([
       loadProject(project_path),
       loadRisks(project_path),
       loadMilestones(project_path),
+      loadProfile(project_path).catch(() => null),
+      loadKnowledge(project_path).catch(() => null),
     ]);
 
     const nextProject: Project = { ...(existingProject || {}), ...(project || {}) } as Project;
     const nextRisks: Risks = { ...(existingRisks || defaultRisks()), ...(risks || {}) } as Risks;
     const nextMilestones: MilestonesState = existingMilestones || defaultMilestones();
+    const nextProfile: Profile = { ...(existingProfile || {}), ...(profile || {}) } as Profile;
+    const nextKnowledge = { ...(existingKnowledge || {}), ...(knowledge || {}) };
 
     if (milestones) {
       if (milestones.current) {
@@ -206,11 +236,14 @@ const updateStateTool: VccaTool = {
       }
     }
 
-    await Promise.all([
+    const writes: Promise<unknown>[] = [
       writeProject(project_path, nextProject),
       writeRisks(project_path, nextRisks),
       writeMilestones(project_path, nextMilestones),
-    ]);
+    ];
+    if (Object.keys(nextProfile).length) writes.push(writeProfile(project_path, nextProfile));
+    if (Object.keys(nextKnowledge).length) writes.push(writeKnowledge(project_path, nextKnowledge));
+    await Promise.all(writes);
 
     if (journal_entry) await appendJournal(project_path, journal_entry);
     if (decision) await appendDecision(project_path, decision.request, decision.recommendation, decision.rationale);
@@ -219,6 +252,8 @@ const updateStateTool: VccaTool = {
       project: nextProject,
       risks: nextRisks,
       milestones: nextMilestones,
+      profile: Object.keys(nextProfile).length ? nextProfile : undefined,
+      knowledge: Object.keys(nextKnowledge).length ? nextKnowledge : undefined,
       updated: true,
     });
   },
@@ -751,7 +786,7 @@ const RISK_ACTION: Record<keyof Risks, string> = {
 const weeklyReviewTool: VccaTool = {
   name: "weekly_review",
   description:
-    "Generate a weekly review for the project. Loads state, repository signals, and recent journal/decision logs.",
+    "Generate a weekly review for the project. Loads state, repository signals, knowledge map, and recent journal/decision logs.",
   inputSchema: z.object({
     project_path: z.string().min(1).describe("Path to the project directory."),
   }),
@@ -761,6 +796,9 @@ const weeklyReviewTool: VccaTool = {
     current_risks: z.array(z.string()),
     suggested_priorities: z.array(z.string()),
     things_not_to_build: z.array(z.string()),
+    knowledge_gaps: z.array(z.any()).optional(),
+    dangerous_overconfidence: z.array(z.any()).optional(),
+    confidence_tendency: z.string().optional(),
     highest_leverage_next_action: z.string(),
     summary: z.string(),
   }),
@@ -849,14 +887,30 @@ const weeklyReviewTool: VccaTool = {
 
     const highest = suggested[0];
 
+    const [knowledgeMap, profile] = await Promise.all([
+      buildKnowledgeMap(project_path, repo).catch(() => null),
+      loadProfile(project_path).catch(() => null),
+    ]);
+
+    const knowledgeGaps = knowledgeMap?.study_queue
+      ?.filter((s) => s.status === "unknown" || s.status === "shaky")
+      .map((s) => ({ concept: s.concept, status: s.status, why: s.why }));
+    const overconfidence = knowledgeMap?.study_queue
+      ?.filter((s) => s.status === "overconfident")
+      .map((s) => ({ concept: s.concept, why: s.why }));
+
     return sanitizeOutput({
       completed_work: completedWork,
       current_milestone: m.current,
       current_risks: currentRisks,
       suggested_priorities: suggested,
       things_not_to_build: notToBuild,
+      knowledge_gaps: knowledgeGaps,
+      dangerous_overconfidence: overconfidence,
+      confidence_tendency: profile?.confidence_tendency,
       highest_leverage_next_action: highest,
-      summary: `Current milestone: ${m.current}. Top risk: ${currentRisks[0] || "unknown"}. Highest-leverage next action: ${highest}.`,
+      summary: `Current milestone: ${m.current}. Top risk: ${currentRisks[0] || "unknown"}. Highest-leverage next action: ${highest}.` +
+        (knowledgeMap ? ` Knowledge: ${knowledgeMap.verified.length} verified, ${knowledgeMap.overconfident.length} overconfident, ${knowledgeMap.unknown_unknowns.length} unknown.` : ""),
     });
   },
 };
@@ -865,204 +919,230 @@ const weeklyReviewTool: VccaTool = {
 // teach_concept
 // =============================================================================
 
-const LESSONS: Record<string, { question: string; explanation: string; apply: string }> = {
-  idempotency: {
-    question: "What happens if Stripe sends the same webhook twice?",
-    explanation:
-      "Idempotency means the same operation can run multiple times without changing the result. Use an idempotency key from the provider and record processed keys so the second request is a no-op.",
-    apply: "Find every webhook handler and add an idempotency key check before changing state.",
-  },
-  "rate-limiting": {
-    question: "What happens if a user tries a thousand passwords?",
-    explanation:
-      "Rate limiting caps how often a caller can use an endpoint. It protects you from brute force, scraping, and accidental abuse. Apply it to logins, public APIs, and expensive endpoints.",
-    apply: "Add rate limiting to authentication and any public API that triggers writes.",
-  },
-  "health-checks": {
-    question: "How does a load balancer know your app is alive?",
-    explanation:
-      "A health endpoint tells the load balancer or orchestrator whether the app can serve traffic. It should test the app and its critical dependencies, not just return 200.",
-    apply: "Create a /health endpoint that checks the database or cache, and wire it into your deploy target.",
-  },
-  "feature-flags": {
-    question: "What if a new feature breaks in production?",
-    explanation:
-      "Feature flags let you ship code without exposing it, and turn it off instantly if something breaks. They separate deploy from release.",
-    apply: "Wrap the next risky feature in a flag so you can disable it without redeploying.",
-  },
-  rollback: {
-    question: "What if the last deploy corrupts data?",
-    explanation:
-      "A rollback strategy lets you revert to the last known good version quickly. It pairs with backward-compatible migrations and feature flags.",
-    apply: "Make the last deploy one command away from a rollback, and test it before you need it.",
-  },
-  validation: {
-    question: "How do you know people want this before you build it?",
-    explanation:
-      "Customer validation means testing demand with smoke tests, waitlists, or paid pre-orders before writing production code. It reduces the risk of building something no one buys.",
-    apply: "Create the smallest test—landing page, waitlist, or pre-order—that validates the riskiest assumption.",
-  },
-  caching: {
-    question: "What if every request hits the database?",
-    explanation:
-      "Caching stores frequently used data closer to where it is needed, so you can serve it faster and reduce load on expensive resources. It only helps when the cost of a cache miss is lower than the cost of fetching fresh data.",
-    apply: "Cache the most-read, slow-to-fetch data and set an explicit invalidation strategy.",
-  },
-  queues: {
-    question: "What if a user has to wait while you send 10,000 emails?",
-    explanation:
-      "A queue lets you hand work off to be processed later. It separates the work a user triggers from the time it takes to finish it, and it smooths out traffic spikes.",
-    apply: "Move any slow, retryable, or bulk work into a queue and process it in the background.",
-  },
-  webhooks: {
-    question: "How do you react to events that happen in another system?",
-    explanation:
-      "Webhooks are HTTP callbacks that another service calls when something happens. They push events to you instead of you polling for them. Because the internet is unreliable, you must handle duplicates, delays, and failures.",
-    apply: "Verify webhook signatures, make handlers idempotent, and return 2xx quickly.",
-  },
-  "database-indexing": {
-    question: "Why is this query getting slower as the table grows?",
-    explanation:
-      "A database index is a lookup structure that lets the database find rows without scanning the whole table. Indexes speed up reads and specific kinds of filters, but they slow down writes and take up space.",
-    apply: "Index the columns you query by most often, especially in WHERE, JOIN, and ORDER BY clauses.",
-  },
-  "load-balancing": {
-    question: "What if one server gets all the traffic?",
-    explanation:
-      "Load balancing spreads traffic across multiple servers so no single machine becomes a bottleneck. It also gives you a place to check health and remove failing instances.",
-    apply: "Put a load balancer in front of your app and add health checks so unhealthy instances stop receiving traffic.",
-  },
-  "secrets-management": {
-    question: "What if your API key is in a public GitHub repo?",
-    explanation:
-      "Secrets management means keeping credentials out of source code and injecting them at runtime from a trusted source. It includes rotation, access control, and audit logs.",
-    apply: "Move secrets to environment variables or a secret manager, rotate any exposed keys, and audit who has access.",
-  },
-  oauth: {
-    question: "Why does 'Sign in with Google' exist?",
-    explanation:
-      "OAuth is a protocol that lets users authorize your app to access their account on another service without giving you their password. It delegates authentication and lets users revoke access.",
-    apply: "Use a managed OAuth provider or library instead of building the flow yourself, and never store the provider's password.",
-  },
-  "api-design": {
-    question: "How do you design an API that is easy to use and hard to misuse?",
-    explanation:
-      "Good API design is about clear naming, consistent conventions, predictable errors, and versioning. It reduces integration time and support burden.",
-    apply: "Define resource names and error shapes, use plural nouns for collections, and version from day one.",
-  },
-  "cron-jobs": {
-    question: "What if you need to do something every night?",
-    explanation:
-      "A cron job is a scheduled task that runs at fixed times. It is useful for reports, cleanup, and batch work, but it can fail silently and is hard to debug.",
-    apply: "Add a heartbeat or log for each run, and make jobs idempotent in case they overlap or rerun.",
-  },
-  "ci-cd": {
-    question: "How do you stop broken code from reaching users?",
-    explanation:
-      "CI/CD is the practice of automatically building, testing, and deploying code. Continuous Integration catches errors before they merge; Continuous Delivery gets fixes to users quickly.",
-    apply: "Set up a pipeline that runs tests on every pull request and deploys automatically from main.",
-  },
-  observability: {
-    question: "How do you debug a problem you cannot see?",
-    explanation:
-      "Observability is the combination of metrics, logs, and traces that explain what your system is doing. It lets you ask new questions without shipping new code.",
-    apply: "Add structured logs, one or two key metrics, and a way to trace a request through your services.",
-  },
-  "monolith-vs-microservices": {
-    question: "Should you start with one big app or many small services?",
-    explanation:
-      "A monolith is one codebase and one deploy. Microservices split a system into independently deployable services. Microservices add operational overhead that is only worth it when a team is large or modules need different scaling.",
-    apply: "Start with a monolith. Split a service out only when one team or module is clearly held back by the shared deploy.",
-  },
-  "database-migrations": {
-    question: "How do you change the database without breaking the app?",
-    explanation:
-      "Database migrations are versioned scripts that apply schema changes. Backward-compatible migrations let old code keep running while new code is deployed.",
-    apply: "Add a migration tool, run migrations before code deploys, and avoid destructive changes in the same deploy as code that uses them.",
-  },
-  "connection-pooling": {
-    question: "Why is your database running out of connections?",
-    explanation:
-      "Connection pooling reuses database connections instead of opening a new one for every request. It reduces overhead and prevents the database from being overwhelmed.",
-    apply: "Use a connection pool in your database driver and size it to your worker count.",
-  },
-  "testing-pyramid": {
-    question: "How many unit tests versus end-to-end tests should you write?",
-    explanation:
-      "The testing pyramid says write many fast, isolated unit tests, fewer integration tests, and very few slow end-to-end tests. This gives you confidence without slow, flaky suites.",
-    apply: "Write unit tests for business logic, integration tests for database and API boundaries, and end-to-end tests for the critical user path.",
-  },
-  "state-management": {
-    question: "Where does the truth live?",
-    explanation:
-      "State management is the discipline of deciding where data is stored, who can change it, and how changes flow through your system. Single sources of truth reduce bugs.",
-    apply: "Pick one source of truth for each entity, make state changes explicit, and avoid duplicating state that can get out of sync.",
-  },
-  "authentication-vs-authorization": {
-    question: "Who are you, and what are you allowed to do?",
-    explanation:
-      "Authentication is verifying identity. Authorization is deciding what that identity is allowed to do. Mixing them leads to security holes.",
-    apply: "Separate login/authentication from permissions/authorization, and check both on every sensitive action.",
-  },
-  "north-star-metric": {
-    question: "What is the one number that tells you the product is working?",
-    explanation:
-      "A north-star metric is the single outcome that captures the core value your product delivers. It aligns the team around what matters most.",
-    apply: "Define one north-star metric and a small set of input metrics that drive it.",
-  },
-  "activation": {
-    question: "When does a new user first feel value?",
-    explanation:
-      "Activation is the moment a user experiences the product's core value. Users who activate are far more likely to retain.",
-    apply: "Identify the minimum actions a new user must take to activate and optimize your onboarding for that moment.",
-  },
-  retention: {
-    question: "Why do users come back?",
-    explanation:
-      "Retention measures how many users return over time. It is one of the best signals of product-market fit and sustainable growth.",
-    apply: "Track cohort retention, find the drop-off point, and improve the experience around the first few uses.",
-  },
-  "smoke-test": {
-    question: "Can you sell it before you build it?",
-    explanation:
-      "A smoke test is a lightweight experiment that checks if demand exists before you build. It can be a landing page, waitlist, or pre-order.",
-    apply: "Create the smallest artifact that proves demand before writing production code.",
-  },
-  "pivot": {
-    question: "What if the idea is not working?",
-    explanation:
-      "A pivot is a structured change to one part of the business model while keeping the vision. It is not a random restart; it is a hypothesis-driven change.",
-    apply: "Pivot when the data shows a better customer, problem, or channel, not because building is hard.",
-  },
-};
-
 const teachConceptTool: VccaTool = {
   name: "teach_concept",
   description:
-    "Prepare a two-minute lesson for a concept. Returns a question, a short explanation, and an immediate application step.",
+    "Prepare a Socratic, confidence-calibrated lesson for a concept. Supports roadmap-style exploration: use 'mode' to go wide (adjacent topics), deep (subtopics), or balanced, and 'depth' for shallow/normal/deep content. Works with or without a project_path.",
   inputSchema: z.object({
     concept: z
       .string()
-      .min(1)
+      .optional()
       .describe(
-        "Concept to teach, e.g. idempotency, rate limiting, health checks, caching, queues, webhooks, database indexing, load balancing, OAuth, API design, CI/CD, observability, feature flags, database migrations, testing pyramid, north star metric, activation, retention, smoke test, pivot."
+        "Concept to teach. Use 'index' or leave empty to list all concepts. Examples: idempotency, rate-limiting, horizontal-scaling, database-sharding, incident-response, unit-economics, gdpr, or any term."
       ),
+    project_path: z.string().optional().describe("Path to project directory. Used to load the user's profile and knowledge state."),
     apply_to: z.string().optional().describe("Optional project context to tailor the application step."),
+    experience_level: z.enum(["newbie", "some_code", "shipped", "senior"]).optional().describe("Override the user's stored experience level."),
+    mode: z.enum(["wide", "deep", "balanced"]).optional().describe("Roadmap mode: wide (adjacent topics), deep (subtopics), balanced (mix)."),
+    depth: z.enum(["shallow", "normal", "deep"]).optional().describe("Content depth: shallow (quick summary), normal, deep (expert prompts + subtopics)."),
+    milestone: z.string().optional().describe("Override the milestone (e.g., 'Idea', 'MVP', 'Growth') for roadmap relevance."),
   }),
   outputSchema: z.object({
-    question: z.string(),
-    explanation: z.string(),
-    apply: z.string(),
+    concept: z.string().optional(),
+    level: z.string().optional(),
+    mode: z.string().optional(),
+    depth: z.string().optional(),
+    question: z.string().optional(),
+    prompts_before_answer: z.array(z.string()).optional(),
+    explanation: z.string().optional(),
+    why_it_matters: z.string().optional(),
+    common_misconception: z.string().optional(),
+    follow_up_questions: z.array(z.string()).optional(),
+    apply: z.string().optional(),
+    related_concepts: z.array(z.string()).optional(),
+    catalog: z.array(z.string()).optional(),
+    self_check_question: z.string().optional(),
+    rubric: z.array(z.string()).optional(),
+    knowledge_status: z.string().optional(),
+    confidence_gap: z.string().optional(),
+    concept_importance: z.string().optional(),
+    prerequisites: z.array(z.string()).optional(),
+    subtopics: z.array(z.string()).optional(),
+    wider_concepts: z.array(z.string()).optional(),
+    study_path: z.array(z.string()).optional(),
+    quick_summary: z.string().optional(),
+    deep_dive: z.any().optional(),
   }),
-  async execute({ concept, apply_to }) {
-    const normalized = concept.toLowerCase().replace(/\s+/g, "-").trim();
-    const lesson = LESSONS[normalized] || {
-      question: `What is the most important thing to understand about ${concept}?`,
-      explanation: `${concept} is a tool or principle. The key is to use it only when it reduces a real risk, not because it is interesting.`,
-      apply: `Find one place in your project where ignoring ${concept} would cause a failure, and fix that first.`,
+  async execute(input: any) {
+    const { concept, project_path, apply_to, experience_level, mode, depth, milestone } = input as {
+      concept?: string;
+      project_path?: string;
+      apply_to?: string;
+      experience_level?: ExperienceLevel;
+      mode?: "wide" | "deep" | "balanced";
+      depth?: "shallow" | "normal" | "deep";
+      milestone?: string;
     };
-    const apply = apply_to ? `${lesson.apply} In your case: ${apply_to}.` : lesson.apply;
-    return sanitizeOutput({ question: lesson.question, explanation: lesson.explanation, apply });
+    // If the caller passes an explicit milestone, we write a temporary project hint to ensure relevance even without a repo.
+    const effectiveMilestone = milestone ? (MILESTONES.includes(milestone as Milestone) ? (milestone as Milestone) : "Idea") : undefined;
+    let pathToUse = project_path;
+    if (milestone && !project_path) {
+      const tmpDir = `${process.cwd()}/.vcca-roadmap-tmp`;
+      await writeProject(tmpDir, { stage: effectiveMilestone } as Project);
+      pathToUse = tmpDir;
+    }
+    const output = await buildTeachOutput(concept || "index", pathToUse, apply_to, experience_level, mode, depth);
+    if (milestone && !project_path) {
+      // Clean up the temporary state.
+      import("node:fs/promises").then((fs) => fs.rm(pathToUse!, { recursive: true, force: true }).catch(() => {}));
+    }
+    return sanitizeOutput(output);
+  },
+};
+
+// =============================================================================
+// onboard_user
+// =============================================================================
+
+const onboardUserTool: VccaTool = {
+  name: "onboard_user",
+  description:
+    "Create or update the user's mental profile for the project. Stores experience level, background, known concepts, and learning style in .vcca/profile.yaml and seeds .vcca/knowledge.yaml.",
+  inputSchema: z.object({
+    project_path: z.string().min(1).describe("Path to the project directory."),
+    experience_level: z.enum(["newbie", "some_code", "shipped", "senior"]).describe("User's general experience level."),
+    backgrounds: z.array(z.enum(["frontend", "backend", "fullstack", "product", "design", "business", "ops", "data"])).optional(),
+    known_concepts: z.array(z.string()).optional().describe("Concepts the user already claims to know well."),
+    learning_style: z.enum(["structured", "exploratory", "project_based"]).optional(),
+    mental_note: z.string().optional().describe("Free-form note about the user's context."),
+  }),
+  outputSchema: z.object({
+    profile: z.any(),
+    knowledge: z.any(),
+    updated: z.boolean(),
+  }),
+  async execute({ project_path, experience_level, backgrounds, known_concepts, learning_style, mental_note }) {
+    const existing = await loadProfile(project_path).catch(() => null);
+    const profile: Profile = {
+      ...(existing || {}),
+      experience_level,
+      backgrounds: backgrounds as Profile["backgrounds"],
+      known_concepts: known_concepts ? known_concepts.map(normalizeConcept) : existing?.known_concepts,
+      learning_style,
+      mental_note,
+    };
+    const { knowledge } = await createProfile(project_path, profile);
+    return sanitizeOutput({ profile, knowledge, updated: true });
+  },
+};
+
+// =============================================================================
+// assess_concept
+// =============================================================================
+
+const assessConceptTool: VccaTool = {
+  name: "assess_concept",
+  description:
+    "Record a user's self-assessment and answer for a concept, compare it to repo/profile evidence, and return a calibrated status (overconfident, shaky, verified, etc). Writes the result to .vcca/knowledge.yaml.",
+  inputSchema: z.object({
+    project_path: z.string().min(1).describe("Path to the project directory."),
+    concept: z.string().min(1).describe("Concept being assessed."),
+    self_rating: z.number().min(1).max(5).describe("How confident the user feels, 1-5."),
+    answer: z.string().optional().describe("The user's answer to the self-check question."),
+    actual_rating: z.number().min(1).max(5).optional().describe("Optional agent-graded actual understanding (1-5). Overrides the default heuristic."),
+    evidence: z.string().optional().describe("Optional free-form evidence the user provided."),
+  }),
+  outputSchema: z.object({
+    concept: z.string(),
+    status: z.string(),
+    self_rating: z.number(),
+    actual_rating: z.number(),
+    gap: z.string(),
+    recommended_action: z.string(),
+    evidence: z.array(z.string()).optional(),
+    answer: z.string().optional(),
+  }),
+  async execute({ project_path, concept, self_rating, answer, actual_rating, evidence }) {
+    const repo = await analyzeRepo(project_path).catch(() => undefined);
+    const result = await assessConcept(project_path, concept, self_rating, answer, repo, actual_rating);
+    const knowledge = (await loadKnowledge(project_path).catch(() => ({}))) || {};
+    const tendency = updateConfidenceTendency(knowledge);
+    const existingProfile = await loadProfile(project_path).catch(() => null);
+    if (existingProfile) {
+      await writeProfile(project_path, { ...existingProfile, confidence_tendency: tendency });
+    }
+    return sanitizeOutput({
+      concept: normalizeConcept(concept),
+      ...result,
+      evidence: result.evidence,
+      answer,
+    });
+  },
+};
+
+// =============================================================================
+// knowledge_map
+// =============================================================================
+
+const knowledgeMapTool: VccaTool = {
+  name: "knowledge_map",
+  description:
+    "Return a dashboard of what the user thinks they know vs. what the repo and past assessments show. Highlights unknown unknowns, dangerous overconfidence, and a study queue.",
+  inputSchema: z.object({
+    project_path: z.string().min(1).describe("Path to the project directory."),
+  }),
+  outputSchema: z.object({
+    experience_level: z.string().optional(),
+    confidence_tendency: z.string().optional(),
+    current_milestone: z.string().optional(),
+    concepts: z.array(z.any()).optional(),
+    unknown_unknowns: z.array(z.string()).optional(),
+    overconfident: z.array(z.string()).optional(),
+    shaky: z.array(z.string()).optional(),
+    verified: z.array(z.string()).optional(),
+    aware: z.array(z.string()).optional(),
+    study_queue: z.array(z.any()).optional(),
+    summary: z.string(),
+  }),
+  async execute({ project_path }) {
+    const repo = await analyzeRepo(project_path).catch(() => undefined);
+    const map = await buildKnowledgeMap(project_path, repo);
+    return sanitizeOutput(map);
+  },
+};
+
+// =============================================================================
+// roadmap
+// =============================================================================
+
+const roadmapTool: VccaTool = {
+  name: "roadmap",
+  description:
+    "Generate a roadmap.sh-style learning path. Returns stages of concepts to cover either wide (across categories), deep (one category), or balanced. Works with or without a project repo.",
+  inputSchema: z.object({
+    project_path: z.string().optional().describe("Path to project directory. If omitted, uses milestone/experience_level inputs."),
+    milestone: z.string().optional().describe("Milestone to target, e.g., 'Idea', 'MVP', 'First Paying User', 'Growth'."),
+    experience_level: z.enum(["newbie", "some_code", "shipped", "senior"]).optional().describe("User's experience level."),
+    mode: z.enum(["wide", "deep", "balanced"]).optional().describe("Wide (breadth), deep (one track), or balanced (mixed)."),
+    focus_area: z.enum(["product", "business", "security", "scaling", "data", "reliability", "architecture", "engineering", "ops"]).optional().describe("For deep mode, which category to drill into."),
+  }),
+  outputSchema: z.object({
+    mode: z.string(),
+    milestone: z.string(),
+    experience_level: z.string(),
+    focus_area: z.string().optional(),
+    stages: z.array(z.any()),
+    summary: z.string(),
+  }),
+  async execute({ project_path, milestone, experience_level, mode, focus_area }) {
+    const m = (milestone && MILESTONES.includes(milestone as Milestone) ? (milestone as Milestone) : undefined);
+    let targetMilestone: Milestone = m || "Idea";
+    let effectiveLevel: ExperienceLevel = experience_level || "newbie";
+    let knowledge = null;
+
+    if (project_path) {
+      const [profile, km, ms] = await Promise.all([
+        loadProfile(project_path).catch(() => null),
+        loadKnowledge(project_path).catch(() => null),
+        loadMilestones(project_path).catch(() => null),
+      ]);
+      effectiveLevel = getEffectiveLevel(experience_level, profile || undefined);
+      targetMilestone = m || ms?.current || (profile as any)?.stage || "Idea";
+      knowledge = km;
+    }
+
+    const output = buildRoadmap(targetMilestone, (mode as any) || "balanced", effectiveLevel, focus_area as any, knowledge || undefined);
+    return sanitizeOutput(output);
   },
 };
 
@@ -1299,6 +1379,10 @@ export const vccaTools = {
   simulate_incident: simulateIncidentTool,
   weekly_review: weeklyReviewTool,
   teach_concept: teachConceptTool,
+  onboard_user: onboardUserTool,
+  assess_concept: assessConceptTool,
+  knowledge_map: knowledgeMapTool,
+  roadmap: roadmapTool,
   milestone_checklist: milestoneChecklistTool,
   repo_review: repoReviewTool,
 } as const;

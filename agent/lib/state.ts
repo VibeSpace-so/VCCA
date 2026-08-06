@@ -71,6 +71,36 @@ export interface State {
   milestones: MilestonesState;
 }
 
+export type ExperienceLevel = "newbie" | "some_code" | "shipped" | "senior";
+export type Background = "frontend" | "backend" | "fullstack" | "product" | "design" | "business" | "ops" | "data";
+export type KnowledgeStatus = "unknown" | "aware" | "shaky" | "verified" | "overconfident";
+
+export interface Profile {
+  experience_level?: ExperienceLevel;
+  backgrounds?: Background[];
+  known_concepts?: string[];
+  learning_style?: "structured" | "exploratory" | "project_based";
+  confidence_tendency?: "overconfident" | "cautious" | "calibrated" | "unknown";
+  mental_note?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface KnowledgeEntry {
+  concept: string;
+  self_rating?: number;
+  actual_rating?: number;
+  evidence?: ("self_report" | "repo_signal" | "milestone" | "assessment" | "agent")[];
+  last_interaction?: string;
+  status?: KnowledgeStatus;
+  answer?: string;
+  notes?: string;
+}
+
+export interface KnowledgeMap {
+  [concept: string]: KnowledgeEntry;
+}
+
 export const RISK_CATEGORIES: (keyof Risks)[] = [
   "Business",
   "Validation",
@@ -116,6 +146,14 @@ export function journalFile(projectPath: string): string {
 
 export function decisionsFile(projectPath: string): string {
   return path.join(getVccaDir(projectPath), "decisions.md");
+}
+
+export function profileFile(projectPath: string): string {
+  return path.join(getVccaDir(projectPath), "profile.yaml");
+}
+
+export function knowledgeFile(projectPath: string): string {
+  return path.join(getVccaDir(projectPath), "knowledge.yaml");
 }
 
 export async function ensureVccaDir(projectPath: string): Promise<void> {
@@ -201,6 +239,24 @@ export async function appendDecision(
   const header = `## ${new Date().toISOString()} — ${request}\n\n`;
   const body = `- **Recommendation:** ${recommendation}\n- **Rationale:** ${rationale}\n\n`;
   await fs.appendFile(file, `${header}${body}`, "utf-8");
+}
+
+export async function loadProfile(projectPath: string): Promise<Profile | null> {
+  return readYamlFile<Profile>(profileFile(projectPath));
+}
+
+export async function writeProfile(projectPath: string, profile: Profile): Promise<void> {
+  await ensureVccaDir(projectPath);
+  await writeYamlFile(profileFile(projectPath), { ...profile, updated_at: new Date().toISOString() });
+}
+
+export async function loadKnowledge(projectPath: string): Promise<KnowledgeMap | null> {
+  return readYamlFile<KnowledgeMap>(knowledgeFile(projectPath));
+}
+
+export async function writeKnowledge(projectPath: string, knowledge: KnowledgeMap): Promise<void> {
+  await ensureVccaDir(projectPath);
+  await writeYamlFile(knowledgeFile(projectPath), knowledge);
 }
 
 export function sanitizeOutput(obj: unknown): unknown {

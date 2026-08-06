@@ -1,7 +1,7 @@
 import { defineTool, type ToolContext } from "eve/tools";
 import { vccaTools } from "../lib/tool-definitions.js";
 
-const tool = vccaTools.load_state;
+const tool = vccaTools.assess_concept;
 const { name: _name, ...definition } = tool;
 
 export default defineTool({
