@@ -11,7 +11,8 @@
     "build": "eve build",
     "start": "eve start",
     "acp": "eve acp",
-    "mcp": "npx tsc -p tsconfig.mcp.json && node .mcp-output/adapters/mcp/server.js"
+    "mcp": "npx tsc -p tsconfig.mcp.json && node .mcp-output/adapters/mcp/server.js",
+    "test": "npx tsc && node --test .output/agent/lib/knowledge.test.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

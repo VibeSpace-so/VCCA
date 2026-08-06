@@ -73,15 +73,6 @@ export interface RoadmapOutput {
   summary: string;
 }
 
-interface AssessmentResult {
-  status: KnowledgeStatus;
-  self_rating: number;
-  actual_rating: number;
-  gap: string;
-  recommended_action: string;
-  evidence: KnowledgeEntry["evidence"];
-}
-
 const STOPWORDS = new Set([
   "a", "an", "the", "and", "or", "but", "is", "are", "was", "were", "be", "been", "being", "to", "of", "in", "for", "on", "with", "as", "by", "it", "its", "this", "that", "you", "your", "i", "we", "they", "them", "their", "from", "at", "if", "then", "than", "so", "do", "does", "did", "has", "have", "had", "can", "could", "will", "would", "should", "may", "might", "must", "about", "into", "through", "during", "before", "after", "above", "below", "up", "down", "out", "off", "over", "under", "again", "further", "once", "here", "there", "when", "where", "why", "how", "all", "each", "few", "more", "most", "other", "some", "such", "no", "nor", "not", "only", "own", "same", "so", "than", "too", "very", "just", "now",
 ]);
@@ -224,8 +215,8 @@ const CONCEPT_REPO_SIGNALS: Record<
   }),
   oauth: (repo) => ({
     match: Boolean(repo?.has_auth) && (repo?.dependencies || []).some((d) => /oauth|next-auth|clerk|auth0|passport/i.test(d)),
-    strength: 4,
-    evidence: "repo has OAuth-related dependency",
+    strength: 3,
+    evidence: "repo has OAuth-related dependency; verify scopes and token handling are configured",
   }),
   "health-checks": (repo) => ({
     match: Boolean(repo?.has_health_endpoint),
@@ -284,13 +275,13 @@ const CONCEPT_REPO_SIGNALS: Record<
   }),
   "sql-injection": (repo) => ({
     match: depMatch(repo, /(prisma|sequelize|typeorm|mongoose|knex|drizzle)/),
-    strength: 3,
-    evidence: "repo uses an ORM or query builder",
+    strength: 2,
+    evidence: "repo uses an ORM or query builder; verify no raw concatenation remains",
   }),
   caching: (repo) => ({
     match: depMatch(repo, /(redis|ioredis|cache-manager|memcached|node-cache)/),
-    strength: 4,
-    evidence: "repo has a cache dependency",
+    strength: 3,
+    evidence: "repo has a cache dependency; verify invalidation and hit/miss behavior",
   }),
   "load-balancing": (repo) => ({
     match: noteMatch(repo, /load.?balancer|nginx|haproxy|alb/i),
@@ -304,13 +295,13 @@ const CONCEPT_REPO_SIGNALS: Record<
   }),
   serverless: (repo) => ({
     match: noteMatch(repo, /serverless|lambda|vercel|netlify|cloud.?function/i),
-    strength: 4,
-    evidence: "architecture notes mention serverless",
+    strength: 3,
+    evidence: "architecture notes mention serverless; verify cold start and vendor lock-in trade-offs",
   }),
   "event-driven-architecture": (repo) => ({
     match: depMatch(repo, /(kafka|rabbitmq|sqs|sns|nats|bull|bee.?queue)/),
-    strength: 4,
-    evidence: "repo uses a message queue or broker",
+    strength: 3,
+    evidence: "repo uses a message queue or broker; verify idempotency and dead-letter handling",
   }),
   "monolith-vs-microservices": (repo) => ({
     match: noteMatch(repo, /monolith|microservice|service/i),
@@ -334,8 +325,8 @@ const CONCEPT_REPO_SIGNALS: Record<
   }),
   "incident-response": (repo) => ({
     match: Boolean(repo?.has_error_reporting) && (repo?.deployment_notes || []).some((n) => /incident|postmortem|rollback/i.test(n)),
-    strength: 3,
-    evidence: "repo has error reporting and incident notes",
+    strength: 2,
+    evidence: "repo has error reporting and incident notes; verify runbook and on-call rotation exist",
   }),
   rollback: (repo) => ({
     match: noteMatch(repo, /rollback|revert|blue.?green|canary/i),
@@ -354,8 +345,8 @@ const CONCEPT_REPO_SIGNALS: Record<
   }),
   "circuit-breaker": (repo) => ({
     match: depMatch(repo, /(opossum|resilience4j|hystrix|breaker)/) || noteMatch(repo, /circuit.?breaker/i),
-    strength: 4,
-    evidence: "repo has circuit breaker dependency or notes",
+    strength: 3,
+    evidence: "repo has circuit breaker dependency or notes; verify timeout and fallback behavior",
   }),
 };
 
@@ -741,13 +732,34 @@ export function chooseFocusArea(
   return best;
 }
 
+export function milestoneReadiness(knowledge: KnowledgeMap | null, milestone: Milestone): { concept: string; status: KnowledgeStatus; importance: number; why: string }[] {
+  const result: { concept: string; status: KnowledgeStatus; importance: number; why: string }[] = [];
+  for (const concept of ALL_CONCEPTS) {
+    const lesson = getLesson(concept);
+    const importance = conceptImportanceForMilestone(concept, milestone, lesson);
+    if (importance < 3) continue;
+    const entry = knowledge?.[concept];
+    const status = entry?.status || "unknown";
+    if (status === "verified" || status === "aware") continue;
+    result.push({
+      concept,
+      status,
+      importance,
+      why: `${concept} is critical for ${milestone} but is currently ${status}.`,
+    });
+  }
+  return result.sort((a, b) => b.importance - a.importance);
+}
+
 export function buildRoadmap(
   milestone: Milestone,
   mode: TeachMode,
   experienceLevel: ExperienceLevel,
   focusArea?: ConceptCategory,
   knowledge?: KnowledgeMap | null,
-  maxConcepts?: number
+  maxConcepts?: number,
+  hideKnown?: boolean,
+  resumeFrom?: string
 ): RoadmapOutput {
   const categoryOrder: ConceptCategory[] = ["product", "business", "security", "architecture", "data", "reliability", "scaling", "engineering", "ops"];
   const stages: RoadmapStage[] = [];
@@ -807,6 +819,40 @@ export function buildRoadmap(
   }
 
   let total = stages.reduce((sum, s) => sum + s.concepts.length, 0);
+
+  // Hide verified/aware concepts if requested.
+  if (hideKnown) {
+    for (const stage of stages) {
+      stage.concepts = stage.concepts.filter((c) => c.status !== "verified" && c.status !== "aware");
+    }
+  }
+
+  // Pin the resume concept to the top of its stage, or first stage if not found.
+  if (resumeFrom) {
+    const target = normalizeConcept(resumeFrom);
+    let pinned = false;
+    for (const stage of stages) {
+      const idx = stage.concepts.findIndex((c) => c.concept === target);
+      if (idx > 0) {
+        const [item] = stage.concepts.splice(idx, 1);
+        stage.concepts.unshift(item);
+        pinned = true;
+        break;
+      } else if (idx === 0) {
+        pinned = true;
+        break;
+      }
+    }
+    if (!pinned && stages.length) {
+      const lesson = getLesson(target);
+      stages[0].concepts.unshift({
+        concept: target,
+        importance: conceptImportanceForMilestone(target, milestone, lesson),
+        status: knowledge?.[target]?.status,
+        why: `Resuming from ${target}.`,
+      });
+    }
+  }
 
   // Cap total concepts if requested, trimming the least important within each stage.
   if (maxConcepts && maxConcepts > 0 && total > maxConcepts) {
@@ -953,13 +999,25 @@ function buildGapMessage(entry: KnowledgeEntry): string {
   return "No prior assessment on record.";
 }
 
+export interface AssessmentResult {
+  status: KnowledgeStatus;
+  self_rating: number;
+  actual_rating: number;
+  suggested_actual_rating: number;
+  needs_review: boolean;
+  gap: string;
+  recommended_action: string;
+  evidence: KnowledgeEntry["evidence"];
+}
+
 export async function assessConcept(
   projectPath: string,
   concept: string,
   selfRating: number,
   answer?: string,
   repo?: RepoSummary,
-  agentActualRating?: number
+  agentActualRating?: number,
+  autoGrade = true
 ): Promise<AssessmentResult> {
   const [profile, knowledgeRaw] = await Promise.all([
     loadProfile(projectPath).catch(() => null),
@@ -970,19 +1028,21 @@ export async function assessConcept(
   const lesson = getLesson(concept);
 
   let actual = 1;
+  let suggested = 1;
   const evidence: KnowledgeEntry["evidence"] = ["self_report"];
+
+  // Compute a suggested rating from the answer, but do not commit it unless auto-grading is on.
+  if (answer) {
+    suggested = evaluateAnswer(answer, lesson);
+  }
 
   // If the agent has already evaluated the answer, trust that.
   if (agentActualRating && agentActualRating >= 1 && agentActualRating <= 5) {
     actual = agentActualRating;
     evidence.push("assessment");
-  } else if (answer) {
-    // Otherwise auto-grade the answer against the concept's model answer and anti-patterns.
-    const answerRating = evaluateAnswer(answer, lesson);
-    if (answerRating > actual) {
-      actual = answerRating;
-      evidence.push("assessment");
-    }
+  } else if (autoGrade && answer) {
+    actual = Math.max(actual, suggested);
+    evidence.push("assessment");
   }
 
   // Repo evidence is the strongest objective signal.
@@ -1010,6 +1070,8 @@ export async function assessConcept(
     notes: repoSignal?.evidence,
   });
   const recommended_action = recommendAction(status, normalized, lesson);
+  // Flag for review when an answer was given but not graded by the agent and the heuristic is uncertain.
+  const needs_review = Boolean(answer) && !agentActualRating && (Math.abs(selfRating - suggested) > 1 || suggested === 3);
 
   knowledge[normalized] = {
     concept: normalized,
@@ -1024,7 +1086,24 @@ export async function assessConcept(
 
   await writeKnowledge(projectPath, knowledge);
 
-  return { status, self_rating: selfRating, actual_rating: actual, gap, recommended_action, evidence };
+  return { status, self_rating: selfRating, actual_rating: actual, suggested_actual_rating: suggested, needs_review, gap, recommended_action, evidence };
+}
+
+function daysSince(iso?: string): number {
+  if (!iso) return 999;
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return 999;
+  return (Date.now() - then) / (1000 * 60 * 60 * 24);
+}
+
+export function isDueForReview(entry: KnowledgeEntry): boolean {
+  const status = entry.status;
+  const d = daysSince(entry.last_interaction);
+  if (status === "verified") return d > 14;
+  if (status === "aware") return d > 7;
+  if (status === "shaky") return d > 3;
+  if (status === "overconfident") return d > 3;
+  return false;
 }
 
 export interface KnowledgeMapView {
@@ -1038,6 +1117,7 @@ export interface KnowledgeMapView {
   shaky: string[];
   verified: string[];
   aware: string[];
+  due_for_review: { concept: string; status: KnowledgeStatus; days_since: number }[];
   study_queue: { concept: string; status: KnowledgeStatus; importance: number; why: string }[];
   summary: string;
 }
@@ -1060,6 +1140,7 @@ export async function buildKnowledgeMap(
   const concepts: KnowledgeMapView["concepts"] = [];
   const byStatus: Record<KnowledgeStatus, string[]> = { unknown: [], aware: [], shaky: [], verified: [], overconfident: [] };
   const studyQueue: KnowledgeMapView["study_queue"] = [];
+  const dueForReview: KnowledgeMapView["due_for_review"] = [];
 
   for (const concept of ALL_CONCEPTS) {
     const lesson = getLesson(concept);
@@ -1102,6 +1183,10 @@ export async function buildKnowledgeMap(
             : "Critical for your stage, but you have not assessed it yet.";
       studyQueue.push({ concept, status: entry.status, importance, why });
     }
+
+    if (isDueForReview(entry)) {
+      dueForReview.push({ concept, status: entry.status || "unknown", days_since: daysSince(entry.last_interaction) });
+    }
   }
 
   studyQueue.sort((a, b) => {
@@ -1130,6 +1215,7 @@ export async function buildKnowledgeMap(
     shaky: byStatus.shaky,
     verified: byStatus.verified,
     aware: byStatus.aware,
+    due_for_review: dueForReview.sort((a, b) => b.days_since - a.days_since),
     study_queue: studyQueue,
     summary,
   };

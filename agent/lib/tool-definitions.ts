@@ -33,6 +33,7 @@ import {
   buildKnowledgeMap,
   buildRoadmap,
   buildTeachOutput,
+  milestoneReadiness,
   createProfile,
   type ExperienceLevel,
   getEffectiveLevel,
@@ -474,9 +475,13 @@ const trackMilestoneTool: VccaTool = {
     previous: z.string().optional(),
     warning: z.string().optional(),
     valid_milestones: z.array(z.string()).optional(),
+    readiness: z.array(z.any()).optional(),
   }),
   async execute({ project_path, current, mark_complete }) {
-    const existing = (await loadMilestones(project_path)) || defaultMilestones();
+    const [existing, knowledge] = await Promise.all([
+      (async () => (await loadMilestones(project_path)) || defaultMilestones())(),
+      loadKnowledge(project_path).catch(() => ({} as any)),
+    ]);
     const previous = existing.current;
     const warnings: string[] = [];
 
@@ -506,6 +511,11 @@ const trackMilestoneTool: VccaTool = {
       if (skipped.length) warnings.push(`Skipped unrecognized milestone(s): ${skipped.join(", ")}.`);
     }
 
+    const readiness = milestoneReadiness(knowledge, existing.current);
+    if (readiness.length) {
+      warnings.push(`${readiness.length} critical knowledge concepts are not verified for ${existing.current}.`);
+    }
+
     await writeMilestones(project_path, existing);
 
     return sanitizeOutput({
@@ -514,6 +524,7 @@ const trackMilestoneTool: VccaTool = {
       previous: previous !== existing.current ? previous : undefined,
       warning: warnings.length ? warnings.join(" ") : undefined,
       valid_milestones: warnings.length ? [...MILESTONES] : undefined,
+      readiness,
     });
   },
 };
@@ -798,6 +809,7 @@ const weeklyReviewTool: VccaTool = {
     things_not_to_build: z.array(z.string()),
     knowledge_gaps: z.array(z.any()).optional(),
     dangerous_overconfidence: z.array(z.any()).optional(),
+    due_for_review: z.array(z.any()).optional(),
     next_recommended_concept: z.any().optional(),
     confidence_tendency: z.string().optional(),
     highest_leverage_next_action: z.string(),
@@ -908,11 +920,12 @@ const weeklyReviewTool: VccaTool = {
       things_not_to_build: notToBuild,
       knowledge_gaps: knowledgeGaps,
       dangerous_overconfidence: overconfidence,
+      due_for_review: knowledgeMap?.due_for_review?.slice(0, 5),
       next_recommended_concept: knowledgeMap?.next_recommended_concept,
       confidence_tendency: profile?.confidence_tendency,
       highest_leverage_next_action: highest,
       summary: `Current milestone: ${m.current}. Top risk: ${currentRisks[0] || "unknown"}. Highest-leverage next action: ${highest}.` +
-        (knowledgeMap ? ` Knowledge: ${knowledgeMap.verified.length} verified, ${knowledgeMap.overconfident.length} overconfident, ${knowledgeMap.unknown_unknowns.length} unknown. Next concept: ${knowledgeMap.next_recommended_concept?.concept || "none"}.` : ""),
+        (knowledgeMap ? ` Knowledge: ${knowledgeMap.verified.length} verified, ${knowledgeMap.overconfident.length} overconfident, ${knowledgeMap.unknown_unknowns.length} unknown. Next concept: ${knowledgeMap.next_recommended_concept?.concept || "none"}. Due for review: ${knowledgeMap.due_for_review.length}.` : ""),
     });
   },
 };
@@ -1043,13 +1056,14 @@ const onboardUserTool: VccaTool = {
 const assessConceptTool: VccaTool = {
   name: "assess_concept",
   description:
-    "Record a user's self-assessment and answer for a concept, compare it to repo/profile evidence, and return a calibrated status (overconfident, shaky, verified, etc). Writes the result to .vcca/knowledge.yaml.",
+    "Record a user's self-assessment and answer for a concept, compare it to repo/profile evidence, and return a calibrated status (overconfident, shaky, verified, etc). If the answer is nuanced, set auto_grade=false and provide an actual_rating after reviewing the answer. Writes the result to .vcca/knowledge.yaml.",
   inputSchema: z.object({
     project_path: z.string().min(1).describe("Path to the project directory."),
     concept: z.string().min(1).describe("Concept being assessed."),
     self_rating: z.number().min(1).max(5).describe("How confident the user feels, 1-5."),
     answer: z.string().optional().describe("The user's answer to the self-check question."),
-    actual_rating: z.number().min(1).max(5).optional().describe("Optional agent-graded actual understanding (1-5). Overrides the default heuristic."),
+    actual_rating: z.number().min(1).max(5).optional().describe("Optional agent-graded actual understanding (1-5). Use when the answer is nuanced."),
+    auto_grade: z.boolean().optional().describe("If true (default), the tool will auto-score the answer. If false, it records the answer and returns a suggested rating for the agent to confirm."),
     evidence: z.string().optional().describe("Optional free-form evidence the user provided."),
   }),
   outputSchema: z.object({
@@ -1057,14 +1071,16 @@ const assessConceptTool: VccaTool = {
     status: z.string(),
     self_rating: z.number(),
     actual_rating: z.number(),
+    suggested_actual_rating: z.number().optional(),
+    needs_review: z.boolean().optional(),
     gap: z.string(),
     recommended_action: z.string(),
     evidence: z.array(z.string()).optional(),
     answer: z.string().optional(),
   }),
-  async execute({ project_path, concept, self_rating, answer, actual_rating, evidence }) {
+  async execute({ project_path, concept, self_rating, answer, actual_rating, auto_grade, evidence }) {
     const repo = await analyzeRepo(project_path).catch(() => undefined);
-    const result = await assessConcept(project_path, concept, self_rating, answer, repo, actual_rating);
+    const result = await assessConcept(project_path, concept, self_rating, answer, repo, actual_rating, auto_grade ?? true);
     const knowledge = (await loadKnowledge(project_path).catch(() => ({}))) || {};
     const tendency = updateConfidenceTendency(knowledge);
     const existingProfile = await loadProfile(project_path).catch(() => null);
@@ -1102,6 +1118,7 @@ const knowledgeMapTool: VccaTool = {
     shaky: z.array(z.string()).optional(),
     verified: z.array(z.string()).optional(),
     aware: z.array(z.string()).optional(),
+    due_for_review: z.array(z.any()).optional(),
     study_queue: z.array(z.any()).optional(),
     summary: z.string(),
   }),
@@ -1127,6 +1144,8 @@ const roadmapTool: VccaTool = {
     mode: z.enum(["wide", "deep", "balanced"]).optional().describe("Wide (breadth), deep (one track), or balanced (mixed)."),
     focus_area: z.enum(["product", "business", "security", "scaling", "data", "reliability", "architecture", "engineering", "ops"]).optional().describe("For deep mode, which category to drill into."),
     max_concepts: z.number().optional().describe("Cap the total number of concepts in the roadmap."),
+    hide_known: z.boolean().optional().describe("If true, filter out concepts already marked verified or aware."),
+    resume_from: z.string().optional().describe("Concept to pin to the top of the roadmap as the user's current study point."),
   }),
   outputSchema: z.object({
     mode: z.string(),
@@ -1137,7 +1156,7 @@ const roadmapTool: VccaTool = {
     summary: z.string(),
     export_path: z.string().optional(),
   }),
-  async execute({ project_path, milestone, experience_level, mode, focus_area, max_concepts }) {
+  async execute({ project_path, milestone, experience_level, mode, focus_area, max_concepts, hide_known, resume_from }) {
     const m = (milestone && MILESTONES.includes(milestone as Milestone) ? (milestone as Milestone) : undefined);
     let targetMilestone: Milestone = m || "Idea";
     let effectiveLevel: ExperienceLevel = experience_level || "newbie";
@@ -1154,7 +1173,7 @@ const roadmapTool: VccaTool = {
       knowledge = km;
     }
 
-    const output = buildRoadmap(targetMilestone, (mode as any) || "balanced", effectiveLevel, focus_area as any, knowledge || undefined, max_concepts);
+    const output = buildRoadmap(targetMilestone, (mode as any) || "balanced", effectiveLevel, focus_area as any, knowledge || undefined, max_concepts, hide_known, resume_from);
 
     if (project_path) {
       const markdown = `# VCCA Learning Roadmap: ${output.milestone}\n\n` +

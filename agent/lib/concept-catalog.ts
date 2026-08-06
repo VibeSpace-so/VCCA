@@ -971,6 +971,53 @@ function lostLesson(concept: string): Lesson {
   };
 }
 
+function firstSentences(text: string, max = 220): string {
+  const parts = text.split(/[.!?](?:\s|$)/).filter(Boolean);
+  let result = parts[0] || text;
+  if (parts.length > 1 && result.length + parts[1].length < max) {
+    result += ". " + parts[1];
+  }
+  return result.length > max ? `${result.slice(0, max - 3)}...` : result;
+}
+
+function splitByOrder(list: string[], concept: string): { prereqs: string[]; next: string[] } {
+  const index = list.indexOf(concept);
+  if (index >= 0) {
+    return {
+      prereqs: list.slice(0, index).filter((c) => c !== concept),
+      next: list.slice(index + 1).filter((c) => c !== concept),
+    };
+  }
+  const half = Math.ceil(list.length / 2);
+  return { prereqs: list.slice(0, half), next: list.slice(half) };
+}
+
+function autofillLesson(concept: string, category: ConceptCategory, lesson: Lesson): Lesson {
+  const display = concept.replace(/-/g, " ");
+  const exampleAnswer = lesson.example_answer || firstSentences(lesson.explanation);
+  const antiPatterns = lesson.anti_patterns ||
+    (lesson.common_misconception ? [lesson.common_misconception] : []);
+  const example = lesson.example || firstSentences(lesson.apply, 160);
+  const caseStudy =
+    lesson.case_study ||
+    `Many teams discover ${display} only after a painful outage or a missed deadline. Studying it early prevents the expensive fix later.`;
+  const resources = lesson.resources || [];
+  const graph = splitByOrder(DEFAULT_RELATED[category] || [], concept);
+  const prereqs = lesson.prereqs || graph.prereqs.slice(0, 3);
+  const next = lesson.next || graph.next.slice(0, 4);
+
+  return {
+    ...lesson,
+    example_answer: exampleAnswer,
+    anti_patterns: antiPatterns,
+    example,
+    case_study: caseStudy,
+    resources,
+    prereqs,
+    next,
+  };
+}
+
 export function getLesson(concept: string): Lesson {
   const normalized = normalizeConcept(concept);
   if (normalized === "" || normalized === "index" || normalized === "list") {
@@ -988,7 +1035,7 @@ export function getLesson(concept: string): Lesson {
 
   const tmpl = TEMPLATES[seed.category](normalized);
   const related = (seed.related ?? DEFAULT_RELATED[seed.category]).filter((r) => r !== normalized);
-  return {
+  return autofillLesson(normalized, seed.category, {
     question: seed.question ?? tmpl.question,
     prompts_before_answer: DEFAULT_PROMPTS_BEFORE_ANSWER,
     explanation: seed.explanation,
@@ -1004,7 +1051,7 @@ export function getLesson(concept: string): Lesson {
     resources: seed.resources,
     prereqs: seed.prereqs,
     next: seed.next,
-  };
+  });
 }
 
 export function getConceptCategory(concept: string): ConceptCategory | undefined {
