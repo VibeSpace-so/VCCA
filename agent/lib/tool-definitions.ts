@@ -21,6 +21,7 @@ import {
   type Risks,
   RISK_CATEGORIES,
   sanitizeOutput,
+  writeGlobalProfile,
   writeKnowledge,
   writeMilestones,
   writeProfile,
@@ -468,6 +469,7 @@ const trackMilestoneTool: VccaTool = {
       .array(z.string())
       .optional()
       .describe(`Additional milestones to mark complete. Valid values: ${VALID_MILESTONES_LIST}.`),
+    require_readiness: z.boolean().optional().describe("If true, block setting the milestone until all critical concepts are verified or aware."),
   }),
   outputSchema: z.object({
     current: z.string(),
@@ -477,7 +479,7 @@ const trackMilestoneTool: VccaTool = {
     valid_milestones: z.array(z.string()).optional(),
     readiness: z.array(z.any()).optional(),
   }),
-  async execute({ project_path, current, mark_complete }) {
+  async execute({ project_path, current, mark_complete, require_readiness }) {
     const [existing, knowledge] = await Promise.all([
       (async () => (await loadMilestones(project_path)) || defaultMilestones())(),
       loadKnowledge(project_path).catch(() => ({} as any)),
@@ -485,13 +487,20 @@ const trackMilestoneTool: VccaTool = {
     const previous = existing.current;
     const warnings: string[] = [];
 
+    const targetMilestone = current && MILESTONES.includes(current as Milestone) ? (current as Milestone) : existing.current;
+    const readiness = milestoneReadiness(knowledge, targetMilestone);
+
     if (current) {
       if (MILESTONES.includes(current as Milestone)) {
-        const targetIndex = MILESTONES.indexOf(current as Milestone);
-        existing.current = current as Milestone;
-        for (let i = 0; i < targetIndex; i++) {
-          if (!existing.completed.includes(MILESTONES[i])) {
-            existing.completed.push(MILESTONES[i]);
+        if (require_readiness && readiness.length) {
+          warnings.push(`Cannot advance to ${current}: ${readiness.length} critical concepts are not verified.`);
+        } else {
+          const targetIndex = MILESTONES.indexOf(current as Milestone);
+          existing.current = current as Milestone;
+          for (let i = 0; i < targetIndex; i++) {
+            if (!existing.completed.includes(MILESTONES[i])) {
+              existing.completed.push(MILESTONES[i]);
+            }
           }
         }
       } else {
@@ -511,8 +520,7 @@ const trackMilestoneTool: VccaTool = {
       if (skipped.length) warnings.push(`Skipped unrecognized milestone(s): ${skipped.join(", ")}.`);
     }
 
-    const readiness = milestoneReadiness(knowledge, existing.current);
-    if (readiness.length) {
+    if (readiness.length && (!current || !require_readiness)) {
       warnings.push(`${readiness.length} critical knowledge concepts are not verified for ${existing.current}.`);
     }
 
@@ -1026,6 +1034,8 @@ const onboardUserTool: VccaTool = {
     backgrounds: z.array(z.enum(["frontend", "backend", "fullstack", "product", "design", "business", "ops", "data"])).optional(),
     known_concepts: z.array(z.string()).optional().describe("Concepts the user already claims to know well."),
     learning_style: z.enum(["structured", "exploratory", "project_based"]).optional(),
+    review_intervals: z.any().optional().describe("Optional review interval override as { verified, aware, shaky, overconfident } in days."),
+    global: z.boolean().optional().describe("If true, also save this profile to ~/.vcca/profile.yaml for reuse across projects."),
     mental_note: z.string().optional().describe("Free-form note about the user's context."),
   }),
   outputSchema: z.object({
@@ -1034,7 +1044,7 @@ const onboardUserTool: VccaTool = {
     calibration_quiz: z.array(z.string()).optional(),
     updated: z.boolean(),
   }),
-  async execute({ project_path, experience_level, backgrounds, known_concepts, learning_style, mental_note }) {
+  async execute({ project_path, experience_level, backgrounds, known_concepts, learning_style, review_intervals, global, mental_note }) {
     const existing = await loadProfile(project_path).catch(() => null);
     const profile: Profile = {
       ...(existing || {}),
@@ -1042,9 +1052,19 @@ const onboardUserTool: VccaTool = {
       backgrounds: backgrounds as Profile["backgrounds"],
       known_concepts: known_concepts ? known_concepts.map(normalizeConcept) : existing?.known_concepts,
       learning_style,
+      review_intervals: review_intervals as Profile["review_intervals"],
       mental_note,
     };
     const { profile: createdProfile, knowledge } = await createProfile(project_path, profile);
+    if (global) {
+      await writeGlobalProfile({
+        experience_level,
+        backgrounds: backgrounds as Profile["backgrounds"],
+        learning_style,
+        review_intervals: review_intervals as Profile["review_intervals"],
+        mental_note,
+      });
+    }
     return sanitizeOutput({ profile: createdProfile, knowledge, calibration_quiz: createdProfile.calibration_quiz, updated: true });
   },
 };
@@ -1073,6 +1093,7 @@ const assessConceptTool: VccaTool = {
     actual_rating: z.number(),
     suggested_actual_rating: z.number().optional(),
     needs_review: z.boolean().optional(),
+    answer_analysis: z.any().optional(),
     gap: z.string(),
     recommended_action: z.string(),
     evidence: z.array(z.string()).optional(),
@@ -1106,6 +1127,8 @@ const knowledgeMapTool: VccaTool = {
     "Return a dashboard of what the user thinks they know vs. what the repo and past assessments show. Highlights unknown unknowns, dangerous overconfidence, and a study queue.",
   inputSchema: z.object({
     project_path: z.string().min(1).describe("Path to the project directory."),
+    category: z.enum(["product", "business", "security", "scaling", "data", "reliability", "architecture", "engineering", "ops"]).optional().describe("Filter to one concept category."),
+    summary_only: z.boolean().optional().describe("If true, return counts and queues but not the full concept list."),
   }),
   outputSchema: z.object({
     experience_level: z.string().optional(),
@@ -1122,9 +1145,9 @@ const knowledgeMapTool: VccaTool = {
     study_queue: z.array(z.any()).optional(),
     summary: z.string(),
   }),
-  async execute({ project_path }) {
+  async execute({ project_path, category, summary_only }) {
     const repo = await analyzeRepo(project_path).catch(() => undefined);
-    const map = await buildKnowledgeMap(project_path, repo);
+    const map = await buildKnowledgeMap(project_path, repo, { category: category as any, summaryOnly: summary_only });
     return sanitizeOutput(map);
   },
 };

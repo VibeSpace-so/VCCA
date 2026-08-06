@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import YAML from "yaml";
 
@@ -75,6 +76,13 @@ export type ExperienceLevel = "newbie" | "some_code" | "shipped" | "senior";
 export type Background = "frontend" | "backend" | "fullstack" | "product" | "design" | "business" | "ops" | "data";
 export type KnowledgeStatus = "unknown" | "aware" | "shaky" | "verified" | "overconfident";
 
+export interface ReviewIntervals {
+  verified?: number;
+  aware?: number;
+  shaky?: number;
+  overconfident?: number;
+}
+
 export interface Profile {
   experience_level?: ExperienceLevel;
   backgrounds?: Background[];
@@ -82,6 +90,7 @@ export interface Profile {
   calibration_quiz?: string[];
   learning_style?: "structured" | "exploratory" | "project_based";
   confidence_tendency?: "overconfident" | "cautious" | "calibrated" | "unknown";
+  review_intervals?: ReviewIntervals;
   mental_note?: string;
   created_at?: string;
   updated_at?: string;
@@ -242,8 +251,32 @@ export async function appendDecision(
   await fs.appendFile(file, `${header}${body}`, "utf-8");
 }
 
+function globalVccaDir(): string {
+  return path.join(os.homedir(), ".vcca");
+}
+
+function globalProfileFile(): string {
+  return path.join(globalVccaDir(), "profile.yaml");
+}
+
+export async function loadGlobalProfile(): Promise<Profile | null> {
+  return readYamlFile<Profile>(globalProfileFile());
+}
+
+export async function writeGlobalProfile(profile: Profile): Promise<void> {
+  const dir = globalVccaDir();
+  await fs.mkdir(dir, { recursive: true });
+  await writeYamlFile(globalProfileFile(), { ...profile, updated_at: new Date().toISOString() });
+}
+
 export async function loadProfile(projectPath: string): Promise<Profile | null> {
-  return readYamlFile<Profile>(profileFile(projectPath));
+  const [global, local] = await Promise.all([
+    loadGlobalProfile().catch(() => null),
+    readYamlFile<Profile>(profileFile(projectPath)).catch(() => null),
+  ]);
+  if (!global && !local) return null;
+  // Project profile overrides global profile fields.
+  return { ...global, ...local };
 }
 
 export async function writeProfile(projectPath: string, profile: Profile): Promise<void> {
