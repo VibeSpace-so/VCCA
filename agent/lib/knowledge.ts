@@ -36,6 +36,9 @@ export interface DeepDive {
   trade_off_prompt: string;
   common_misconception_2: string;
   subtopics: string[];
+  example?: string;
+  case_study?: string;
+  resources?: string[];
 }
 
 export interface TeachOutput extends Lesson {
@@ -196,6 +199,15 @@ const CATEGORY_MILESTONE_IMPORTANCE: Partial<
   },
 };
 
+function depMatch(repo: RepoSummary | undefined, pattern: RegExp): boolean {
+  return (repo?.dependencies || []).some((d) => pattern.test(d.toLowerCase())) || (repo?.dev_dependencies || []).some((d) => pattern.test(d.toLowerCase()));
+}
+
+function noteMatch(repo: RepoSummary | undefined, ...patterns: RegExp[]): boolean {
+  const all = [...(repo?.architecture_notes || []), ...(repo?.security_notes || []), ...(repo?.deployment_notes || [])].join(" ").toLowerCase();
+  return patterns.some((p) => p.test(all));
+}
+
 const CONCEPT_REPO_SIGNALS: Record<
   string,
   (repo: RepoSummary | undefined) => { match: boolean; strength: number; evidence: string }
@@ -235,6 +247,16 @@ const CONCEPT_REPO_SIGNALS: Record<
     strength: 4,
     evidence: "repo has monitoring/logging/error reporting",
   }),
+  logging: (repo) => ({
+    match: Boolean(repo?.has_logging),
+    strength: 3,
+    evidence: "repo has logging library",
+  }),
+  monitoring: (repo) => ({
+    match: Boolean(repo?.has_monitoring),
+    strength: 4,
+    evidence: "repo has monitoring tool",
+  }),
   "database-migrations": (repo) => ({
     match: Boolean(repo?.has_migrations),
     strength: 4,
@@ -246,9 +268,9 @@ const CONCEPT_REPO_SIGNALS: Record<
     evidence: "repo has tests",
   }),
   gdpr: (repo) => ({
-    match: Boolean(repo?.has_privacy_policy),
+    match: Boolean(repo?.has_privacy_policy || repo?.has_terms),
     strength: 4,
-    evidence: "repo has privacy policy",
+    evidence: "repo has privacy policy or terms",
   }),
   "secrets-management": (repo) => ({
     match: (repo?.top_level || []).some((n) => n.toLowerCase().includes(".env")),
@@ -256,9 +278,84 @@ const CONCEPT_REPO_SIGNALS: Record<
     evidence: ".env file found; verify secrets are managed",
   }),
   "input-validation": (repo) => ({
-    match: Boolean(repo?.has_auth),
-    strength: 2,
-    evidence: "repo has auth; validation likely present",
+    match: Boolean(repo?.has_auth || depMatch(repo, /(zod|joi|yup|validator|class-validator)/)),
+    strength: 3,
+    evidence: "auth or validation library present",
+  }),
+  "sql-injection": (repo) => ({
+    match: depMatch(repo, /(prisma|sequelize|typeorm|mongoose|knex|drizzle)/),
+    strength: 3,
+    evidence: "repo uses an ORM or query builder",
+  }),
+  caching: (repo) => ({
+    match: depMatch(repo, /(redis|ioredis|cache-manager|memcached|node-cache)/),
+    strength: 4,
+    evidence: "repo has a cache dependency",
+  }),
+  "load-balancing": (repo) => ({
+    match: noteMatch(repo, /load.?balancer|nginx|haproxy|alb/i),
+    strength: 3,
+    evidence: "architecture notes mention load balancing",
+  }),
+  "horizontal-scaling": (repo) => ({
+    match: noteMatch(repo, /horizontal|scale.?out|kubernetes|k8s|replica/i),
+    strength: 3,
+    evidence: "architecture notes mention horizontal scaling",
+  }),
+  serverless: (repo) => ({
+    match: noteMatch(repo, /serverless|lambda|vercel|netlify|cloud.?function/i),
+    strength: 4,
+    evidence: "architecture notes mention serverless",
+  }),
+  "event-driven-architecture": (repo) => ({
+    match: depMatch(repo, /(kafka|rabbitmq|sqs|sns|nats|bull|bee.?queue)/),
+    strength: 4,
+    evidence: "repo uses a message queue or broker",
+  }),
+  "monolith-vs-microservices": (repo) => ({
+    match: noteMatch(repo, /monolith|microservice|service/i),
+    strength: 3,
+    evidence: "architecture notes mention monolith or microservices",
+  }),
+  "api-design": (repo) => ({
+    match: noteMatch(repo, /api.?design|rest|graphql|openapi|swagger/i),
+    strength: 3,
+    evidence: "architecture notes mention API design",
+  }),
+  "state-management": (repo) => ({
+    match: depMatch(repo, /(redux|zustand|recoil|mobx|pinia|context)/),
+    strength: 3,
+    evidence: "repo uses state management library",
+  }),
+  docker: (repo) => ({
+    match: Boolean(repo?.has_docker),
+    strength: 4,
+    evidence: "repo has Docker configuration",
+  }),
+  "incident-response": (repo) => ({
+    match: Boolean(repo?.has_error_reporting) && (repo?.deployment_notes || []).some((n) => /incident|postmortem|rollback/i.test(n)),
+    strength: 3,
+    evidence: "repo has error reporting and incident notes",
+  }),
+  rollback: (repo) => ({
+    match: noteMatch(repo, /rollback|revert|blue.?green|canary/i),
+    strength: 3,
+    evidence: "deployment notes mention rollback strategy",
+  }),
+  "database-indexing": (repo) => ({
+    match: noteMatch(repo, /index|indexed|query.?performance/i),
+    strength: 3,
+    evidence: "architecture or data notes mention indexing",
+  }),
+  "connection-pooling": (repo) => ({
+    match: depMatch(repo, /(pg.?pool|generic.?pool|tarn|node.?pool)/),
+    strength: 3,
+    evidence: "repo has connection pooling dependency",
+  }),
+  "circuit-breaker": (repo) => ({
+    match: depMatch(repo, /(opossum|resilience4j|hystrix|breaker)/) || noteMatch(repo, /circuit.?breaker/i),
+    strength: 4,
+    evidence: "repo has circuit breaker dependency or notes",
   }),
 };
 
@@ -359,22 +456,59 @@ function tokens(text: string): Set<string> {
   return new Set(cleaned.filter((w) => w.length > 2 && !STOPWORDS.has(w)));
 }
 
+function phraseHits(text: string, phrases: string[]): number {
+  const lower = text.toLowerCase();
+  return phrases.filter((p) => lower.includes(p.toLowerCase())).length;
+}
+
 export function evaluateAnswer(answer: string, lesson: Lesson): number {
   if (!answer || answer.trim().length < 10) return 1;
   const answerTokens = tokens(answer);
-  const sourceText = `${lesson.explanation} ${lesson.apply} ${(lesson.why_it_matters || "")} ${(lesson.common_misconception || "")}`;
-  const sourceTokens = tokens(sourceText);
-  const rubricTokens = tokens(lesson.follow_up_questions?.join(" ") || "");
   if (answerTokens.size === 0) return 1;
-  let matches = 0;
+
+  // Build a model answer and anti-patterns, falling back to explanation / misconception.
+  const example = lesson.example_answer || lesson.explanation || "";
+  const exampleText = `${example} ${lesson.why_it_matters || ""}`;
+  const exampleTokens = tokens(exampleText);
+
+  const antiPatterns = lesson.anti_patterns?.length
+    ? lesson.anti_patterns
+    : lesson.common_misconception
+      ? [lesson.common_misconception]
+      : [];
+  const antiText = antiPatterns.join(" ");
+  const antiTokens = tokens(antiText);
+
+  let positive = 0;
+  let negative = 0;
   for (const t of answerTokens) {
-    if (sourceTokens.has(t) || rubricTokens.has(t)) matches++;
+    if (exampleTokens.has(t)) positive++;
+    if (antiTokens.has(t)) negative++;
   }
-  const ratio = matches / answerTokens.size;
-  if (ratio < 0.15) return 2;
-  if (ratio < 0.3) return 3;
-  if (ratio < 0.5) return 4;
-  return 5;
+
+  // Whole-phrase anti-pattern hits are a strong negative signal (e.g. "test code before deploying").
+  const antiHits = phraseHits(answer, antiPatterns);
+
+  const positiveRatio = positive / answerTokens.size;
+  const negativeRatio = negative / answerTokens.size;
+
+  let score: number;
+  if (positiveRatio < 0.15) score = 2;
+  else if (positiveRatio < 0.3) score = 3;
+  else if (positiveRatio < 0.5) score = 4;
+  else score = 5;
+
+  // If the user parrots an anti-pattern or the negative signal is strong, cap the score.
+  if (antiHits > 0 || negativeRatio > 0.3) {
+    return Math.min(score, 2);
+  }
+
+  // If they hit a very high positive match with no anti-pattern, promote to verified.
+  if (positiveRatio >= 0.6 && !antiHits) {
+    return Math.max(score, 5);
+  }
+
+  return score;
 }
 
 function actualRatingFromRepo(concept: string, repo: RepoSummary | undefined): { rating: number; evidence: string } | null {
@@ -464,6 +598,9 @@ function deepDiveFor(concept: string, category: ConceptCategory | undefined, les
     trade_off_prompt: `When does ${display} become more expensive than the problem it solves? Give a concrete example of a time you would deliberately not use it.`,
     common_misconception_2: `That knowing the definition of ${display} is the same as having made it survive real traffic, real attackers, or real money.`,
     subtopics: subtopics.slice(0, 5),
+    example: lesson.example,
+    case_study: lesson.case_study,
+    resources: lesson.resources,
   };
 }
 
@@ -483,46 +620,55 @@ export function computeTeachExtras(input: TeachExtrasInput): Partial<TeachOutput
   const importance = conceptImportanceForMilestone(concept, milestone, lesson);
   const extras: Partial<TeachOutput> = {};
 
-  // Build the neighborhood graph from the category's default related concepts.
-  const related = category ? DEFAULT_RELATED[category] : [];
-  const neighbors = related.filter((c) => c !== concept);
-  const conceptIndex = related.indexOf(concept);
-
-  // Sort by importance, then by the catalog's default learning order.
-  const withImportance = neighbors
-    .map((c) => ({
-      concept: c,
-      importance: conceptImportanceForMilestone(c, milestone, getLesson(c)),
-      order: related.indexOf(c),
-    }))
-    .sort((a, b) => (a.importance - b.importance) || (a.order - b.order));
-
-  // If the concept is in the canonical list, everything before it is a prerequisite, after is a subtopic.
-  // Otherwise use importance to split: lower/equal importance but earlier in list = prereqs, higher = subtopics.
-  if (conceptIndex >= 0) {
-    extras.prerequisites = withImportance
-      .filter((x) => x.order < conceptIndex)
-      .slice(0, 4)
-      .map((x) => x.concept);
-    extras.subtopics = withImportance
-      .filter((x) => x.order > conceptIndex)
-      .slice(0, 5)
-      .map((x) => x.concept);
+  // Prefer an explicit graph from the catalog, then fall back to the category's default related concepts.
+  if (lesson.prereqs?.length || lesson.next?.length) {
+    extras.prerequisites = (lesson.prereqs || [])
+      .filter((c) => c !== concept)
+      .slice(0, 4);
+    extras.subtopics = (lesson.next || [])
+      .filter((c) => c !== concept)
+      .slice(0, 5);
   } else {
-    const prereqThreshold = Math.max(1, importance - 1);
-    extras.prerequisites = withImportance
-      .filter((x) => x.importance <= prereqThreshold)
-      .slice(0, 4)
-      .map((x) => x.concept);
-    extras.subtopics = withImportance
-      .filter((x) => x.importance > importance)
-      .slice(0, 5)
-      .map((x) => x.concept);
-    // If nothing is strictly higher, use the second half of the ordered list as subtopics (e.g. deep mode at an early milestone).
-    if (!extras.subtopics?.length) {
-      const half = Math.ceil(withImportance.length / 2);
-      extras.prerequisites = withImportance.slice(0, half).map((x) => x.concept);
-      extras.subtopics = withImportance.slice(half).map((x) => x.concept);
+    const related = category ? DEFAULT_RELATED[category] : [];
+    const neighbors = related.filter((c) => c !== concept);
+    const conceptIndex = related.indexOf(concept);
+
+    // Sort by importance, then by the catalog's default learning order.
+    const withImportance = neighbors
+      .map((c) => ({
+        concept: c,
+        importance: conceptImportanceForMilestone(c, milestone, getLesson(c)),
+        order: related.indexOf(c),
+      }))
+      .sort((a, b) => (a.importance - b.importance) || (a.order - b.order));
+
+    // If the concept is in the canonical list, everything before it is a prerequisite, after is a subtopic.
+    // Otherwise use importance to split: lower/equal importance but earlier in list = prereqs, higher = subtopics.
+    if (conceptIndex >= 0) {
+      extras.prerequisites = withImportance
+        .filter((x) => x.order < conceptIndex)
+        .slice(0, 4)
+        .map((x) => x.concept);
+      extras.subtopics = withImportance
+        .filter((x) => x.order > conceptIndex)
+        .slice(0, 5)
+        .map((x) => x.concept);
+    } else {
+      const prereqThreshold = Math.max(1, importance - 1);
+      extras.prerequisites = withImportance
+        .filter((x) => x.importance <= prereqThreshold)
+        .slice(0, 4)
+        .map((x) => x.concept);
+      extras.subtopics = withImportance
+        .filter((x) => x.importance > importance)
+        .slice(0, 5)
+        .map((x) => x.concept);
+      // If nothing is strictly higher, use the second half of the ordered list as subtopics (e.g. deep mode at an early milestone).
+      if (!extras.subtopics?.length) {
+        const half = Math.ceil(withImportance.length / 2);
+        extras.prerequisites = withImportance.slice(0, half).map((x) => x.concept);
+        extras.subtopics = withImportance.slice(half).map((x) => x.concept);
+      }
     }
   }
 
@@ -600,7 +746,8 @@ export function buildRoadmap(
   mode: TeachMode,
   experienceLevel: ExperienceLevel,
   focusArea?: ConceptCategory,
-  knowledge?: KnowledgeMap | null
+  knowledge?: KnowledgeMap | null,
+  maxConcepts?: number
 ): RoadmapOutput {
   const categoryOrder: ConceptCategory[] = ["product", "business", "security", "architecture", "data", "reliability", "scaling", "engineering", "ops"];
   const stages: RoadmapStage[] = [];
@@ -659,7 +806,18 @@ export function buildRoadmap(
     if (nice.length) stages.push({ name: "Nice to have", concepts: nice });
   }
 
-  const total = stages.reduce((sum, s) => sum + s.concepts.length, 0);
+  let total = stages.reduce((sum, s) => sum + s.concepts.length, 0);
+
+  // Cap total concepts if requested, trimming the least important within each stage.
+  if (maxConcepts && maxConcepts > 0 && total > maxConcepts) {
+    const perStage = Math.max(1, Math.floor(maxConcepts / stages.length));
+    for (const stage of stages) {
+      stage.concepts = stage.concepts
+        .sort((a, b) => b.importance - a.importance)
+        .slice(0, perStage);
+    }
+    total = stages.reduce((sum, s) => sum + s.concepts.length, 0);
+  }
   const summary = `Roadmap for ${milestone} (${mode}, ${experienceLevel}): ${total} concepts across ${stages.length} stages.` +
     (focusArea || mode === "deep" ? ` Focus: ${stages[0]?.name || focusArea || "auto"}.` : "");
 
@@ -818,6 +976,13 @@ export async function assessConcept(
   if (agentActualRating && agentActualRating >= 1 && agentActualRating <= 5) {
     actual = agentActualRating;
     evidence.push("assessment");
+  } else if (answer) {
+    // Otherwise auto-grade the answer against the concept's model answer and anti-patterns.
+    const answerRating = evaluateAnswer(answer, lesson);
+    if (answerRating > actual) {
+      actual = answerRating;
+      evidence.push("assessment");
+    }
   }
 
   // Repo evidence is the strongest objective signal.
@@ -866,6 +1031,7 @@ export interface KnowledgeMapView {
   experience_level: ExperienceLevel;
   confidence_tendency: Profile["confidence_tendency"];
   current_milestone?: Milestone;
+  next_recommended_concept?: { concept: string; status: KnowledgeStatus; importance: number; why: string };
   concepts: { concept: string; status: KnowledgeStatus; self_rating?: number; actual_rating?: number; importance: number }[];
   unknown_unknowns: string[];
   overconfident: string[];
@@ -927,11 +1093,13 @@ export async function buildKnowledgeMap(
     });
     byStatus[entry.status || "unknown"].push(concept);
 
-    if ((entry.status === "unknown" || entry.status === "overconfident") && importance >= 2) {
+    if ((["unknown", "shaky", "overconfident"] as KnowledgeStatus[]).includes(entry.status || "unknown") && importance >= 2) {
       const why =
         entry.status === "overconfident"
           ? "Critical for your stage, but your confidence outpaces the evidence."
-          : "Critical for your stage, but you have not assessed it yet.";
+          : entry.status === "shaky"
+            ? "Critical for your stage, and the evidence agrees this is shaky."
+            : "Critical for your stage, but you have not assessed it yet.";
       studyQueue.push({ concept, status: entry.status, importance, why });
     }
   }
@@ -942,15 +1110,20 @@ export async function buildKnowledgeMap(
     return b.importance - a.importance;
   });
 
+  const nextRecommended = studyQueue[0];
   const summary =
     `Knowledge map for ${milestone}: ${byStatus.verified.length} verified, ` +
     `${byStatus.overconfident.length} overconfident, ${byStatus.unknown.length} unknown, ` +
-    `${byStatus.shaky.length} shaky. Top study: ${studyQueue.slice(0, 3).map((s) => s.concept).join(", ") || "none"}.`;
+    `${byStatus.shaky.length} shaky. Next recommended: ${nextRecommended?.concept || "none"}.`;
+
+  // Persist any repo/profile signal updates so the map is not just a one-time view.
+  await writeKnowledge(projectPath, knowledge).catch(() => null);
 
   return {
     experience_level: level,
     confidence_tendency: profile?.confidence_tendency || "unknown",
     current_milestone: milestone,
+    next_recommended_concept: nextRecommended ? { concept: nextRecommended.concept, status: nextRecommended.status, importance: nextRecommended.importance, why: nextRecommended.why } : undefined,
     concepts,
     unknown_unknowns: byStatus.unknown,
     overconfident: byStatus.overconfident,
@@ -967,8 +1140,13 @@ export async function createProfile(
   profile: Profile
 ): Promise<{ profile: Profile; knowledge: KnowledgeMap; created: boolean }> {
   const now = new Date().toISOString();
+  const [project, milestones] = await Promise.all([
+    loadProject(projectPath).catch(() => null),
+    loadMilestones(projectPath).catch(() => null),
+  ]);
+  const milestone = milestones?.current || (project?.stage as Milestone) || "Idea";
+
   const next: Profile = { ...profile, created_at: profile.created_at || now, updated_at: now };
-  await writeProfile(projectPath, next);
 
   const knowledge: KnowledgeMap = {};
   for (const concept of (next.known_concepts || [])) {
@@ -1001,6 +1179,17 @@ export async function createProfile(
     }
   }
 
+  // Build a calibration quiz of high-importance concepts the user did not claim to know.
+  const quiz = ALL_CONCEPTS
+    .filter((c) => !(next.known_concepts || []).map(normalizeConcept).includes(c))
+    .map((c) => ({ concept: c, importance: conceptImportanceForMilestone(c, milestone, getLesson(c)) }))
+    .filter((x) => x.importance >= 2)
+    .sort((a, b) => b.importance - a.importance)
+    .slice(0, 5)
+    .map((x) => x.concept);
+  next.calibration_quiz = quiz;
+
+  await writeProfile(projectPath, next);
   await writeKnowledge(projectPath, knowledge);
   return { profile: next, knowledge, created: true };
 }

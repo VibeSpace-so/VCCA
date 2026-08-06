@@ -18,6 +18,15 @@ export interface Lesson {
   follow_up_questions?: string[];
   apply: string;
   related_concepts?: string[];
+  // Assessment and depth content.
+  example_answer?: string;
+  anti_patterns?: string[];
+  example?: string;
+  case_study?: string;
+  resources?: string[];
+  // Graph edges.
+  prereqs?: string[];
+  next?: string[];
 }
 
 export interface CatalogLesson extends Lesson {
@@ -32,6 +41,13 @@ interface ConceptSeed {
   why?: string;
   misconception?: string;
   related?: string[];
+  example_answer?: string;
+  anti_patterns?: string[];
+  example?: string;
+  case_study?: string;
+  resources?: string[];
+  prereqs?: string[];
+  next?: string[];
 }
 
 const DEFAULT_PROMPTS_BEFORE_ANSWER = [
@@ -168,6 +184,21 @@ const SEEDS: Record<string, ConceptSeed> = {
     explanation:
       "A north-star metric is the single outcome that captures the core value your product delivers. It aligns the team around what matters most.",
     apply: "Define one north-star metric and a small set of input metrics that drive it.",
+    example_answer:
+      "A north-star metric is the single outcome that best captures the core value your product delivers to users. It should be one metric the whole team can rally around.",
+    anti_patterns: [
+      "revenue is the only metric",
+      "vanity metric",
+      "number of signups",
+      "number of downloads",
+      "page views",
+    ],
+    example: "For Slack, messages sent inside organizations was a better north star than signups because it measured real value.",
+    case_study:
+      "Airbnb's early north star was 'nights booked' rather than 'listings created.' It focused the team on actual transactions, not just supply.",
+    resources: ["https://amplitude.com/north-star"],
+    prereqs: ["validation"],
+    next: ["activation", "retention", "ab-testing"],
   },
   activation: {
     category: "product",
@@ -189,6 +220,21 @@ const SEEDS: Record<string, ConceptSeed> = {
     explanation:
       "A smoke test is a lightweight experiment that checks if demand exists before you build. It can be a landing page, waitlist, or pre-order.",
     apply: "Create the smallest artifact that proves demand before writing production code.",
+    example_answer:
+      "A smoke test is a small, cheap experiment to prove demand before you build. Examples are a landing page, a waitlist, or a pre-order page.",
+    anti_patterns: [
+      "test code before deploying",
+      "check if the build works",
+      "unit tests",
+      "quality assurance",
+      "test your code",
+    ],
+    example: "A landing page with a fake 'Buy' button that records clicks but does not process payments.",
+    case_study:
+      "Dropbox famously made a three-minute demo video as a smoke test before building the full product. The waitlist exploded, proving demand without writing code.",
+    resources: ["https://www.ycombinator.com/library/4D-yc-s-18-class-lecture"],
+    prereqs: ["validation"],
+    next: ["north-star-metric", "ab-testing"],
   },
   validation: {
     category: "product",
@@ -196,6 +242,19 @@ const SEEDS: Record<string, ConceptSeed> = {
     explanation:
       "Customer validation means testing demand with smoke tests, waitlists, or paid pre-orders before writing production code. It reduces the risk of building something no one buys.",
     apply: "Create the smallest test—landing page, waitlist, or pre-order—that validates the riskiest assumption.",
+    example_answer:
+      "Validation means proving people want what you are building before you write production code, using smoke tests, waitlists, interviews, or pre-orders.",
+    anti_patterns: [
+      "ask your friends",
+      "people said they would buy",
+      "build it and they will come",
+    ],
+    example: "Running a $20 pre-order campaign and confirming payment before building the feature.",
+    case_study:
+      "Zappos started by taking photos of shoes in stores and listing them online. When someone bought, they purchased the shoe retail and shipped it, validating demand before inventory.",
+    resources: ["https://www.startupschool.org/", "https://www.ycombinator.com/library"],
+    prereqs: ["smoke-test"],
+    next: ["north-star-metric", "pivot"],
   },
   pivot: {
     category: "product",
@@ -203,6 +262,20 @@ const SEEDS: Record<string, ConceptSeed> = {
     explanation:
       "A pivot is a structured change to one part of the business model while keeping the vision. It is not a random restart; it is a hypothesis-driven change.",
     apply: "Pivot when the data shows a better customer, problem, or channel, not because building is hard.",
+    example_answer:
+      "A pivot is a structured, evidence-based change to part of your business model while keeping the overall vision.",
+    anti_patterns: [
+      "give up",
+      "start over",
+      "random restart",
+      "because it is hard",
+    ],
+    example: "Changing from a paid SaaS to a usage-based API model after data shows developers prefer per-call pricing.",
+    case_study:
+      "YouTube began as a video-dating site. When that flopped, it pivoted to a general video-sharing platform based on upload and viewing data.",
+    resources: ["https://www.startupschool.org/"],
+    prereqs: ["validation", "north-star-metric"],
+    next: ["unit-economics", "retention"],
   },
   "ab-testing": {
     category: "product",
@@ -263,6 +336,20 @@ const SEEDS: Record<string, ConceptSeed> = {
     explanation:
       "Rate limiting caps how often a caller can use an endpoint. It protects you from brute force, scraping, and accidental abuse. Apply it to logins, public APIs, and expensive endpoints.",
     apply: "Add rate limiting to authentication and any public API that triggers writes.",
+    example_answer:
+      "Rate limiting is a control that caps how often a caller can hit an endpoint. It protects against brute force, scraping, and accidental abuse.",
+    anti_patterns: [
+      "only slow down attackers",
+      "block users",
+      "we can handle the load",
+      "we have a firewall",
+    ],
+    example: "A login endpoint that allows only 5 attempts per minute per IP, then returns 429 Too Many Requests.",
+    case_study:
+      "GitHub's API returns 403 with a 'rate limit exceeded' message and X-RateLimit headers. Clients know exactly when they can retry.",
+    resources: ["https://www.nginx.com/blog/rate-limiting-nginx/"],
+    prereqs: ["authentication-vs-authorization"],
+    next: ["input-validation", "oauth"],
   },
   "health-checks": {
     category: "ops",
@@ -305,6 +392,19 @@ const SEEDS: Record<string, ConceptSeed> = {
     explanation:
       "Authentication is verifying identity. Authorization is deciding what that identity is allowed to do. Mixing them leads to security holes.",
     apply: "Separate login/authentication from permissions/authorization, and check both on every sensitive action.",
+    example_answer:
+      "Authentication is proving who you are. Authorization is deciding what you are allowed to do. They are separate concerns.",
+    anti_patterns: [
+      "same thing",
+      "if you are logged in you can do anything",
+      "is admin",
+    ],
+    example: "A user logs in with a password (authentication), then the system checks if they own the resource before deleting it (authorization).",
+    case_study:
+      "Many breaches happen because systems check 'is the user logged in?' but not 'is the user allowed to access this record?'. That is an authorization failure.",
+    resources: ["https://auth0.com/intro-to-iam/authentication-vs-authorization"],
+    prereqs: [],
+    next: ["oauth", "rate-limiting", "input-validation"],
   },
   "input-validation": {
     category: "security",
@@ -543,6 +643,20 @@ const SEEDS: Record<string, ConceptSeed> = {
     explanation:
       "CI/CD is the practice of automatically building, testing, and deploying code. Continuous Integration catches errors before they merge; Continuous Delivery gets fixes to users quickly.",
     apply: "Set up a pipeline that runs tests on every pull request and deploys automatically from main.",
+    example_answer:
+      "CI/CD is the practice of automatically building, testing, and deploying code. Continuous Integration catches problems before merge; Continuous Delivery lets you ship changes quickly.",
+    anti_patterns: [
+      "deploy on friday",
+      "deploy manually",
+      "merge without tests",
+      "ship from laptop",
+    ],
+    example: "Every pull request runs lint and unit tests before it can be merged; every merge to main deploys to staging automatically.",
+    case_study:
+      "Etsy famously moved from quarterly deploys to tens of deploys per day by building a robust CI/CD and deployment pipeline.",
+    resources: ["https://martinfowler.com/articles/continuousIntegration.html"],
+    prereqs: ["testing-pyramid"],
+    next: ["feature-flags", "rollback"],
   },
   "testing-pyramid": {
     category: "engineering",
@@ -596,6 +710,20 @@ const SEEDS: Record<string, ConceptSeed> = {
     explanation:
       "Database migrations are versioned scripts that apply schema changes. Backward-compatible migrations let old code keep running while new code is deployed.",
     apply: "Add a migration tool, run migrations before code deploys, and avoid destructive changes in the same deploy as code that uses them.",
+    example_answer:
+      "Database migrations are versioned scripts that change the schema safely. They should be backward-compatible so old code keeps running while new code is deployed.",
+    anti_patterns: [
+      "change column type",
+      "drop column same deploy",
+      "edit production by hand",
+      "run one big script",
+    ],
+    example: "Add a new nullable column, deploy code that reads it, then backfill and make it non-nullable in a later migration.",
+    case_study:
+      "Deployments fail when a migration drops a column that the old running code still reads. Backward-compatible, multi-step migrations prevent this.",
+    resources: ["https://www.koreanwonfun.com/articles/zero-downtime-migrations"],
+    prereqs: ["database-indexing"],
+    next: ["connection-pooling", "n-plus-one"],
   },
   "database-replication": {
     category: "data",
@@ -715,6 +843,20 @@ const SEEDS: Record<string, ConceptSeed> = {
     explanation:
       "Observability is the combination of metrics, logs, and traces that explain what your system is doing. It lets you ask new questions without shipping new code.",
     apply: "Add structured logs, one or two key metrics, and a way to trace a request through your services.",
+    example_answer:
+      "Observability is the ability to understand what a system is doing by looking at its outputs: metrics, logs, and traces.",
+    anti_patterns: [
+      "just log everything",
+      "print debugging",
+      "redeploy to add logs",
+      "only use dashboards",
+    ],
+    example: "A trace follows one user request through the API, database, and cache, so you can see where latency spikes.",
+    case_study:
+      "Honeycomb and Datadog popularized observability by letting engineers ask ad-hoc questions of high-cardinality events, reducing mean time to debug.",
+    resources: ["https://www.honeycomb.io/blog/what-is-observability"],
+    prereqs: ["health-checks", "logging"],
+    next: ["incident-response", "slos"],
   },
   "on-call": {
     category: "ops",
@@ -727,6 +869,20 @@ const SEEDS: Record<string, ConceptSeed> = {
     explanation:
       "The process for diagnosing, mitigating, and learning from outages. The goal is to restore service, not to assign blame.",
     apply: "Run a tabletop incident drill and time how long it takes to find the right person and rollback.",
+    example_answer:
+      "Incident response is the process for responding to, mitigating, and learning from production outages. The goal is to restore service fast and prevent recurrence.",
+    anti_patterns: [
+      "find who to blame",
+      "fix it quietly",
+      "no postmortem",
+      "wake up the ceo",
+    ],
+    example: "An on-call engineer gets paged, rolls back the bad deploy, writes a postmortem, and schedules a follow-up fix.",
+    case_study:
+      "Netflix's 'Chaos Monkey' and 'Simian Army' deliberately break things to test and improve incident response.",
+    resources: ["https://sre.google/sre-book/managing-incidents/"],
+    prereqs: ["observability", "rollback"],
+    next: ["postmortem", "on-call"],
   },
   postmortem: {
     category: "ops",
@@ -841,6 +997,13 @@ export function getLesson(concept: string): Lesson {
     follow_up_questions: tmpl.follow_up_questions,
     apply: seed.apply ?? tmpl.apply,
     related_concepts: related.length ? related : undefined,
+    example_answer: seed.example_answer,
+    anti_patterns: seed.anti_patterns,
+    example: seed.example,
+    case_study: seed.case_study,
+    resources: seed.resources,
+    prereqs: seed.prereqs,
+    next: seed.next,
   };
 }
 

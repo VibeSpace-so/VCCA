@@ -79,6 +79,7 @@ export interface Profile {
   experience_level?: ExperienceLevel;
   backgrounds?: Background[];
   known_concepts?: string[];
+  calibration_quiz?: string[];
   learning_style?: "structured" | "exploratory" | "project_based";
   confidence_tendency?: "overconfident" | "cautious" | "calibrated" | "unknown";
   mental_note?: string;

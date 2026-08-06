@@ -798,6 +798,7 @@ const weeklyReviewTool: VccaTool = {
     things_not_to_build: z.array(z.string()),
     knowledge_gaps: z.array(z.any()).optional(),
     dangerous_overconfidence: z.array(z.any()).optional(),
+    next_recommended_concept: z.any().optional(),
     confidence_tendency: z.string().optional(),
     highest_leverage_next_action: z.string(),
     summary: z.string(),
@@ -907,10 +908,11 @@ const weeklyReviewTool: VccaTool = {
       things_not_to_build: notToBuild,
       knowledge_gaps: knowledgeGaps,
       dangerous_overconfidence: overconfidence,
+      next_recommended_concept: knowledgeMap?.next_recommended_concept,
       confidence_tendency: profile?.confidence_tendency,
       highest_leverage_next_action: highest,
       summary: `Current milestone: ${m.current}. Top risk: ${currentRisks[0] || "unknown"}. Highest-leverage next action: ${highest}.` +
-        (knowledgeMap ? ` Knowledge: ${knowledgeMap.verified.length} verified, ${knowledgeMap.overconfident.length} overconfident, ${knowledgeMap.unknown_unknowns.length} unknown.` : ""),
+        (knowledgeMap ? ` Knowledge: ${knowledgeMap.verified.length} verified, ${knowledgeMap.overconfident.length} overconfident, ${knowledgeMap.unknown_unknowns.length} unknown. Next concept: ${knowledgeMap.next_recommended_concept?.concept || "none"}.` : ""),
     });
   },
 };
@@ -956,6 +958,13 @@ const teachConceptTool: VccaTool = {
     knowledge_status: z.string().optional(),
     confidence_gap: z.string().optional(),
     concept_importance: z.string().optional(),
+    example_answer: z.string().optional(),
+    anti_patterns: z.array(z.string()).optional(),
+    example: z.string().optional(),
+    case_study: z.string().optional(),
+    resources: z.array(z.string()).optional(),
+    prereqs: z.array(z.string()).optional(),
+    next: z.array(z.string()).optional(),
     prerequisites: z.array(z.string()).optional(),
     subtopics: z.array(z.string()).optional(),
     wider_concepts: z.array(z.string()).optional(),
@@ -1009,6 +1018,7 @@ const onboardUserTool: VccaTool = {
   outputSchema: z.object({
     profile: z.any(),
     knowledge: z.any(),
+    calibration_quiz: z.array(z.string()).optional(),
     updated: z.boolean(),
   }),
   async execute({ project_path, experience_level, backgrounds, known_concepts, learning_style, mental_note }) {
@@ -1021,8 +1031,8 @@ const onboardUserTool: VccaTool = {
       learning_style,
       mental_note,
     };
-    const { knowledge } = await createProfile(project_path, profile);
-    return sanitizeOutput({ profile, knowledge, updated: true });
+    const { profile: createdProfile, knowledge } = await createProfile(project_path, profile);
+    return sanitizeOutput({ profile: createdProfile, knowledge, calibration_quiz: createdProfile.calibration_quiz, updated: true });
   },
 };
 
@@ -1085,6 +1095,7 @@ const knowledgeMapTool: VccaTool = {
     experience_level: z.string().optional(),
     confidence_tendency: z.string().optional(),
     current_milestone: z.string().optional(),
+    next_recommended_concept: z.any().optional(),
     concepts: z.array(z.any()).optional(),
     unknown_unknowns: z.array(z.string()).optional(),
     overconfident: z.array(z.string()).optional(),
@@ -1110,11 +1121,12 @@ const roadmapTool: VccaTool = {
   description:
     "Generate a roadmap.sh-style learning path. Returns stages of concepts to cover either wide (across categories), deep (one category), or balanced. Works with or without a project repo.",
   inputSchema: z.object({
-    project_path: z.string().optional().describe("Path to project directory. If omitted, uses milestone/experience_level inputs."),
+    project_path: z.string().optional().describe("Path to project directory. If omitted, uses milestone/experience_level inputs. If provided, the roadmap is also saved to .vcca/roadmap.md."),
     milestone: z.string().optional().describe("Milestone to target, e.g., 'Idea', 'MVP', 'First Paying User', 'Growth'."),
     experience_level: z.enum(["newbie", "some_code", "shipped", "senior"]).optional().describe("User's experience level."),
     mode: z.enum(["wide", "deep", "balanced"]).optional().describe("Wide (breadth), deep (one track), or balanced (mixed)."),
     focus_area: z.enum(["product", "business", "security", "scaling", "data", "reliability", "architecture", "engineering", "ops"]).optional().describe("For deep mode, which category to drill into."),
+    max_concepts: z.number().optional().describe("Cap the total number of concepts in the roadmap."),
   }),
   outputSchema: z.object({
     mode: z.string(),
@@ -1123,8 +1135,9 @@ const roadmapTool: VccaTool = {
     focus_area: z.string().optional(),
     stages: z.array(z.any()),
     summary: z.string(),
+    export_path: z.string().optional(),
   }),
-  async execute({ project_path, milestone, experience_level, mode, focus_area }) {
+  async execute({ project_path, milestone, experience_level, mode, focus_area, max_concepts }) {
     const m = (milestone && MILESTONES.includes(milestone as Milestone) ? (milestone as Milestone) : undefined);
     let targetMilestone: Milestone = m || "Idea";
     let effectiveLevel: ExperienceLevel = experience_level || "newbie";
@@ -1141,7 +1154,16 @@ const roadmapTool: VccaTool = {
       knowledge = km;
     }
 
-    const output = buildRoadmap(targetMilestone, (mode as any) || "balanced", effectiveLevel, focus_area as any, knowledge || undefined);
+    const output = buildRoadmap(targetMilestone, (mode as any) || "balanced", effectiveLevel, focus_area as any, knowledge || undefined, max_concepts);
+
+    if (project_path) {
+      const markdown = `# VCCA Learning Roadmap: ${output.milestone}\n\n` +
+        `${output.summary}\n\n` +
+        output.stages.map((s) => `## ${s.name}\n\n` + s.concepts.map((c) => `- **${c.concept}** (importance ${c.importance}) — ${c.why}`).join("\n")).join("\n\n");
+      await fs.writeFile(`${project_path}/.vcca/roadmap.md`, markdown).catch(() => null);
+      return sanitizeOutput({ ...output, export_path: `${project_path}/.vcca/roadmap.md` });
+    }
+
     return sanitizeOutput(output);
   },
 };
