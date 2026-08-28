@@ -1,3 +1,8 @@
+// Course pillars live in agent/courses/ and are merged in here so the
+// tutor pipeline picks them up automatically. Individual course authors
+// edit only their pillar file; the coordinator owns this merge.
+import { COURSE_SEEDS } from "../courses/index.js";
+
 export type ConceptCategory =
   | "security"
   | "scaling"
@@ -33,7 +38,7 @@ export interface CatalogLesson extends Lesson {
   catalog?: string[];
 }
 
-interface ConceptSeed {
+export interface ConceptSeed {
   category: ConceptCategory;
   question?: string;
   explanation: string;
@@ -928,7 +933,12 @@ const SEEDS: Record<string, ConceptSeed> = {
   },
 };
 
-export const ALL_CONCEPTS = Object.keys(SEEDS).sort();
+const SEEDS_WITH_COURSES: Record<string, ConceptSeed> = {
+  ...SEEDS,
+  ...COURSE_SEEDS,
+};
+
+export const ALL_CONCEPTS = Object.keys(SEEDS_WITH_COURSES).sort();
 
 export function normalizeConcept(concept: string): string {
   return concept
@@ -1082,7 +1092,7 @@ export function getLesson(concept: string): Lesson {
     return lostLesson(concept);
   }
 
-  const seed = SEEDS[normalized];
+  const seed = SEEDS_WITH_COURSES[normalized];
   if (!seed) {
     return genericLesson(concept);
   }
@@ -1110,7 +1120,7 @@ export function getLesson(concept: string): Lesson {
 
 export function getConceptCategory(concept: string): ConceptCategory | undefined {
   const normalized = normalizeConcept(concept);
-  const seed = SEEDS[normalized];
+  const seed = SEEDS_WITH_COURSES[normalized];
   if (seed) return seed.category;
   // Heuristic fallback for unknown concepts.
   const lesson = getLesson(concept);
